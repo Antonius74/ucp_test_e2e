@@ -14,13 +14,15 @@
 
 """UCP."""
 
+from datetime import datetime, timezone
 from decimal import Decimal
 import json
 import os
 from pathlib import Path
 import re
+from typing import Literal
 from uuid import uuid4
-from pydantic import AnyUrl
+from pydantic import AnyUrl, BaseModel
 from ucp_sdk.models.schemas.shopping.checkout_resp import (
     CheckoutResponse as Checkout,
 )
@@ -67,6 +69,24 @@ DEFAULT_CURRENCY = "USD"
 DEFAULT_ORDER_BASE_URL = "http://127.0.0.1:10999"
 
 
+class PurchaseReservation(BaseModel):
+    """Reservation request for deferred purchase execution."""
+
+    id: str
+    product_id: str
+    product_name: str
+    condition_type: Literal["price_drop", "back_in_stock"]
+    status: Literal["active", "triggered"]
+    created_at: str
+    trigger_reason: str | None = None
+    triggered_at: str | None = None
+    buyer_email: str | None = None
+    currency: str = DEFAULT_CURRENCY
+    current_price: str
+    target_price: str | None = None
+    current_availability: str
+
+
 class RetailStore:
     """Mock Retail Store for demo purposes.
 
@@ -79,6 +99,7 @@ class RetailStore:
         self._products = {}
         self._checkouts = {}
         self._orders = {}
+        self._purchase_reservations = {}
         self._initialize_ucp_metadata()
         self._initialize_products()
 
@@ -216,6 +237,49 @@ class RetailStore:
 
         """
         return self._products.get(product_id)
+
+    def _normalize_email(self, buyer_email: str | None) -> str | None:
+        if not isinstance(buyer_email, str):
+            return None
+        normalized = buyer_email.strip().lower()
+        return normalized or None
+
+    def _product_price_cents(self, product: Product) -> int:
+        if not product.offers or not product.offers.price:
+            raise ValueError(f"Product {product.product_id} does not have a valid price")
+        return int(Decimal(product.offers.price) * 100)
+
+    def _price_string_from_cents(self, cents: int, currency: str = DEFAULT_CURRENCY) -> str:
+        symbol = "€" if currency.upper() == "EUR" else "$"
+        return f"{symbol}{(cents / 100):.2f}"
+
+    def _is_product_in_stock(self, product: Product) -> bool:
+        availability = (
+            product.offers.availability.lower()
+            if product.offers and isinstance(product.offers.availability, str)
+            else ""
+        )
+        return "instock" in availability or "presale" in availability
+
+    def _evaluate_reservation(
+        self,
+        reservation: PurchaseReservation,
+        product: Product,
+    ) -> tuple[bool, str | None]:
+        if reservation.condition_type == "back_in_stock":
+            if self._is_product_in_stock(product):
+                return True, "product_back_in_stock"
+            return False, None
+
+        current_price_cents = self._product_price_cents(product)
+        if reservation.target_price is None:
+            return False, None
+
+        target_price_value = reservation.target_price.replace("$", "").replace("€", "")
+        target_price_cents = int(Decimal(target_price_value) * 100)
+        if current_price_cents <= target_price_cents:
+            return True, "price_reached_target"
+        return False, None
 
     def _get_line_item(self, product: Product, quantity: int) -> LineItem:
         """Create a line item for a product.
@@ -638,6 +702,132 @@ class RetailStore:
         if not orders:
             return None
         return orders[0]
+
+    def _parse_target_price_cents(self, target_price: str | int | float) -> int:
+        if isinstance(target_price, int):
+            value = Decimal(target_price)
+        elif isinstance(target_price, float):
+            value = Decimal(str(target_price))
+        else:
+            normalized = target_price.strip().replace(",", ".")
+            normalized = re.sub(r"[^0-9.]", "", normalized)
+            if not normalized:
+                raise ValueError("target_price must contain a numeric value")
+            value = Decimal(normalized)
+
+        if value <= 0:
+            raise ValueError("target_price must be greater than zero")
+
+        return int(value * 100)
+
+    def create_purchase_reservation(
+        self,
+        *,
+        product_id: str,
+        condition_type: Literal["price_drop", "back_in_stock"],
+        buyer_email: str | None = None,
+        target_price: str | int | float | None = None,
+    ) -> PurchaseReservation:
+        """Create a reservation for a deferred purchase condition."""
+        product = self.get_product(product_id)
+        if product is None:
+            raise ValueError(f"Product with ID {product_id} is not found")
+
+        current_price_cents = self._product_price_cents(product)
+        currency = product.offers.price_currency or DEFAULT_CURRENCY
+        target_price_value: str | None = None
+
+        if condition_type == "price_drop":
+            if target_price is None:
+                default_target_cents = max(1, int(current_price_cents * Decimal("0.9")))
+                target_price_value = self._price_string_from_cents(default_target_cents, currency)
+            else:
+                target_cents = self._parse_target_price_cents(target_price)
+                target_price_value = self._price_string_from_cents(target_cents, currency)
+
+        reservation = PurchaseReservation(
+            id=f"resv_{uuid4().hex[:10]}",
+            product_id=product.product_id,
+            product_name=product.name,
+            condition_type=condition_type,
+            status="active",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            buyer_email=self._normalize_email(buyer_email),
+            currency=currency,
+            current_price=self._price_string_from_cents(current_price_cents, currency),
+            target_price=target_price_value,
+            current_availability=product.offers.availability,
+        )
+        triggered, reason = self._evaluate_reservation(reservation, product)
+        if triggered:
+            reservation.status = "triggered"
+            reservation.trigger_reason = reason
+            reservation.triggered_at = datetime.now(timezone.utc).isoformat()
+
+        self._purchase_reservations[reservation.id] = reservation
+        return reservation
+
+    def list_purchase_reservations(
+        self,
+        *,
+        buyer_email: str | None = None,
+        status: Literal["active", "triggered"] | None = None,
+        limit: int = 20,
+    ) -> list[PurchaseReservation]:
+        """List purchase reservations with optional filters."""
+        self.refresh_purchase_reservations()
+        if limit <= 0:
+            return []
+
+        normalized_email = self._normalize_email(buyer_email)
+        reservations = list(self._purchase_reservations.values())
+        reservations.reverse()
+
+        if normalized_email:
+            reservations = [
+                reservation
+                for reservation in reservations
+                if reservation.buyer_email == normalized_email
+            ]
+        if status:
+            reservations = [
+                reservation
+                for reservation in reservations
+                if reservation.status == status
+            ]
+
+        return reservations[:limit]
+
+    def refresh_purchase_reservations(
+        self,
+        *,
+        product_id: str | None = None,
+    ) -> list[PurchaseReservation]:
+        """Re-evaluate active reservations and return newly triggered ones."""
+        triggered_reservations: list[PurchaseReservation] = []
+        for reservation in self._purchase_reservations.values():
+            if reservation.status != "active":
+                continue
+            if product_id and reservation.product_id != product_id:
+                continue
+
+            product = self.get_product(reservation.product_id)
+            if product is None:
+                continue
+
+            reservation.current_price = self._price_string_from_cents(
+                self._product_price_cents(product),
+                product.offers.price_currency or DEFAULT_CURRENCY,
+            )
+            reservation.current_availability = product.offers.availability
+            triggered, reason = self._evaluate_reservation(reservation, product)
+            if triggered:
+                reservation.status = "triggered"
+                reservation.trigger_reason = reason
+                reservation.triggered_at = datetime.now(timezone.utc).isoformat()
+                triggered_reservations.append(reservation)
+
+        return triggered_reservations
 
     def _get_fulfillment_options(self) -> list[FulfillmentOptionResponse]:
         """Return a list of available fulfillment options.

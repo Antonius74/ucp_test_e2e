@@ -28,7 +28,11 @@ from ucp_sdk.models.schemas.shopping.types.payment_instrument import (
 from ucp_sdk.models.schemas.shopping.types.postal_address import PostalAddress
 from ucp_sdk.models.schemas.ucp import ResponseCheckout as UcpMetadata
 
-from .constants import UCP_CHECKOUT_KEY
+from .constants import (
+    UCP_CHECKOUT_KEY,
+    UCP_PURCHASE_RESERVATION_KEY,
+    UCP_PURCHASE_RESERVATIONS_KEY,
+)
 from .store import RetailStore
 
 MERCHANT_PAYMENT_RESULT_KEY = "a2a.merchant.payment_result"
@@ -160,7 +164,15 @@ class ShopAgentA2A:
         data_payload = {
             key: value
             for key, value in result.items()
-            if key in {UCP_CHECKOUT_KEY, "a2a.product_results", A2A_ORDERS_KEY, "status"}
+            if key
+            in {
+                UCP_CHECKOUT_KEY,
+                "a2a.product_results",
+                A2A_ORDERS_KEY,
+                UCP_PURCHASE_RESERVATION_KEY,
+                UCP_PURCHASE_RESERVATIONS_KEY,
+                "status",
+            }
         }
         if data_payload:
             message_parts.append(_new_data_part(data_payload))
@@ -314,6 +326,95 @@ class ShopAgentA2A:
             return {
                 "message": f"I found {len(orders)} completed order(s): {summary}.",
                 A2A_ORDERS_KEY: self._serialize_orders(orders),
+                "status": "success",
+            }
+
+        if action == "reserve_on_price_drop":
+            product_id = str(params.get("product_id", "")).strip()
+            if not product_id:
+                return {"message": "Product ID is required.", "status": "error"}
+
+            try:
+                reservation = self.store.create_purchase_reservation(
+                    product_id=product_id,
+                    condition_type="price_drop",
+                    buyer_email=(
+                        str(params.get("buyer_email")).strip()
+                        if params.get("buyer_email") is not None
+                        else None
+                    ),
+                    target_price=params.get("target_price"),
+                )
+            except ValueError as exc:
+                return {"message": str(exc), "status": "error"}
+            return {
+                "message": (
+                    f"Price-drop reservation created for {reservation.product_name}. "
+                    f"Status: {reservation.status}."
+                ),
+                UCP_PURCHASE_RESERVATION_KEY: reservation.model_dump(mode="json"),
+                "status": "success",
+            }
+
+        if action == "reserve_on_restock":
+            product_id = str(params.get("product_id", "")).strip()
+            if not product_id:
+                return {"message": "Product ID is required.", "status": "error"}
+
+            try:
+                reservation = self.store.create_purchase_reservation(
+                    product_id=product_id,
+                    condition_type="back_in_stock",
+                    buyer_email=(
+                        str(params.get("buyer_email")).strip()
+                        if params.get("buyer_email") is not None
+                        else None
+                    ),
+                )
+            except ValueError as exc:
+                return {"message": str(exc), "status": "error"}
+            return {
+                "message": (
+                    f"Back-in-stock reservation created for {reservation.product_name}. "
+                    f"Status: {reservation.status}."
+                ),
+                UCP_PURCHASE_RESERVATION_KEY: reservation.model_dump(mode="json"),
+                "status": "success",
+            }
+
+        if action == "list_purchase_reservations":
+            buyer_email = (
+                str(params.get("buyer_email")).strip()
+                if params.get("buyer_email") is not None
+                else None
+            )
+            status = (
+                str(params.get("status")).strip().lower()
+                if params.get("status") is not None
+                else None
+            )
+            if status not in {None, "active", "triggered"}:
+                return {
+                    "message": "status must be either 'active' or 'triggered'.",
+                    "status": "error",
+                }
+            try:
+                limit = int(params.get("limit", 20))
+            except (TypeError, ValueError):
+                limit = 20
+            limit = max(1, min(limit, 100))
+
+            reservations = self.store.list_purchase_reservations(
+                buyer_email=buyer_email,
+                status=status,  # type: ignore[arg-type]
+                limit=limit,
+            )
+            return {
+                "message": f"I found {len(reservations)} reservation(s).",
+                UCP_PURCHASE_RESERVATIONS_KEY: [
+                    reservation.model_dump(mode="json")
+                    for reservation in reservations
+                ],
                 "status": "success",
             }
 

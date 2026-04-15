@@ -37,6 +37,8 @@ from .constants import (
     ADK_UCP_METADATA_STATE,
     ADK_USER_CHECKOUT_ID,
     UCP_CHECKOUT_KEY,
+    UCP_PURCHASE_RESERVATION_KEY,
+    UCP_PURCHASE_RESERVATIONS_KEY,
     UCP_PAYMENT_DATA_KEY,
     UCP_RISK_SIGNALS_KEY,
 )
@@ -268,6 +270,100 @@ def get_order(tool_context: ToolContext, order_id: str) -> dict:
     }
 
 
+def reserve_on_price_drop(
+    tool_context: ToolContext,
+    product_id: str,
+    target_price: float | int | str | None = None,
+    buyer_email: str | None = None,
+) -> dict:
+    """Create a reservation that triggers when a product reaches a target price."""
+    try:
+        reservation = store.create_purchase_reservation(
+            product_id=product_id,
+            condition_type="price_drop",
+            buyer_email=buyer_email,
+            target_price=target_price,
+        )
+    except ValueError as exc:
+        return _create_error_response(str(exc))
+
+    message = (
+        f"Purchase reservation created for {reservation.product_name}. "
+        f"Status: {reservation.status}."
+    )
+    if reservation.target_price:
+        message += f" Target price: {reservation.target_price}."
+
+    return {
+        "message": message,
+        UCP_PURCHASE_RESERVATION_KEY: reservation.model_dump(mode="json"),
+        "status": "success",
+    }
+
+
+def reserve_on_restock(
+    tool_context: ToolContext,
+    product_id: str,
+    buyer_email: str | None = None,
+) -> dict:
+    """Create a reservation that triggers when an out-of-stock item is available again."""
+    try:
+        reservation = store.create_purchase_reservation(
+            product_id=product_id,
+            condition_type="back_in_stock",
+            buyer_email=buyer_email,
+        )
+    except ValueError as exc:
+        return _create_error_response(str(exc))
+
+    return {
+        "message": (
+            f"Back-in-stock reservation created for {reservation.product_name}. "
+            f"Status: {reservation.status}."
+        ),
+        UCP_PURCHASE_RESERVATION_KEY: reservation.model_dump(mode="json"),
+        "status": "success",
+    }
+
+
+def list_purchase_reservations(
+    tool_context: ToolContext,
+    buyer_email: str | None = None,
+    status: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """List reservations that were created for deferred purchases."""
+    normalized_status = (
+        status.strip().lower()
+        if isinstance(status, str) and status.strip()
+        else None
+    )
+    if normalized_status not in {None, "active", "triggered"}:
+        return _create_error_response("status must be either 'active' or 'triggered'")
+
+    safe_limit = max(1, min(int(limit), 100))
+    reservations = store.list_purchase_reservations(
+        buyer_email=buyer_email,
+        status=normalized_status,  # type: ignore[arg-type]
+        limit=safe_limit,
+    )
+
+    if not reservations:
+        return {
+            "message": "No purchase reservations found yet.",
+            UCP_PURCHASE_RESERVATIONS_KEY: [],
+            "status": "not_found",
+        }
+
+    return {
+        "message": f"I found {len(reservations)} purchase reservation(s).",
+        UCP_PURCHASE_RESERVATIONS_KEY: [
+            reservation.model_dump(mode="json") for reservation in reservations
+        ],
+        "status": "success",
+    }
+
+
 def update_customer_details(
     tool_context: ToolContext,
     first_name: str,
@@ -450,7 +546,12 @@ def after_tool_modifier(
     """
     extensions = tool_context.state.get(ADK_EXTENSIONS_STATE_KEY, [])
     # add typed data responses to the state
-    ucp_response_keys = [UCP_CHECKOUT_KEY, "a2a.product_results"]
+    ucp_response_keys = [
+        UCP_CHECKOUT_KEY,
+        "a2a.product_results",
+        UCP_PURCHASE_RESERVATION_KEY,
+        UCP_PURCHASE_RESERVATIONS_KEY,
+    ]
     if UcpExtension.URI in extensions and any(
         key in tool_response for key in ucp_response_keys
     ):
@@ -497,13 +598,16 @@ root_agent = Agent(
         " invoking the available tools instead of only replying with text."
         " If the message includes an explicit action payload with an 'action'"
         " field (for example add_to_checkout, update_checkout, start_payment,"
-        " update_customer_details, complete_checkout), call the matching tool"
-        " immediately with the provided arguments. Never echo the raw JSON"
-        " action back to the user. If the user asks to add or remove items,"
+        " update_customer_details, complete_checkout, reserve_on_price_drop,"
+        " reserve_on_restock), call the matching tool immediately with the"
+        " provided arguments. Never echo the raw JSON action back to the user."
+        " If the user asks to add or remove items,"
         " update the checkout accordingly. If they ask to replace items, call"
         " remove_from_checkout and add_to_checkout to apply the change."
         " If the user asks for order status, their latest order, or asks to"
         " view an order by ID, call get_latest_order or get_order."
+        " If they ask to buy later when cheaper or when available again, call"
+        " reserve_on_price_drop or reserve_on_restock."
         " When payment data is already present in session state and the user"
         " asks to complete checkout, call complete_checkout."
     ),
@@ -515,6 +619,9 @@ root_agent = Agent(
         get_checkout,
         get_latest_order,
         get_order,
+        reserve_on_price_drop,
+        reserve_on_restock,
+        list_purchase_reservations,
         start_payment,
         update_customer_details,
         complete_checkout,

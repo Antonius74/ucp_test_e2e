@@ -148,5 +148,30 @@
     "gtin": "9876543210135",
     "mpn": "HE-NB-001",
     "category": "Groceries > Health & Nutrition Bars"
+  },
+  {
+    "@type": "Product",
+    "productID": "COFFEE-001",
+    "name": "Single Origin Coffee Beans",
+    "sku": "COFFEE-001",
+    "image": ["http://localhost:10999/images/nutribar.jpg"],
+    "brand": {
+      "@type": "Brand",
+      "name": "MorningRoast"
+    },
+    "offers": {
+      "price": "12.99",
+      "priceCurrency": "USD",
+      "priceSpecification": null,
+      "@type": "Offer",
+      "availability": "https://schema.org/OutOfStock",
+      "itemCondition": "https://schema.org/NewCondition"
+    },
+    "aggregateRating": null,
+    "url": "https://example.com/coffee-001",
+    "description": "Medium roast arabica beans, currently out of stock.",
+    "gtin": "9876543210141",
+    "mpn": "MR-CF-001",
+    "category": "Groceries > Beverages > Coffee"
   }
 ]

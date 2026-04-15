@@ -332,11 +332,106 @@ async def run(host, port):
 """
         return HTMLResponse(content)
 
+    async def reservations_page(request):
+        limit_param = request.query_params.get("limit", "50")
+        try:
+            limit = max(1, min(int(limit_param), 200))
+        except ValueError:
+            limit = 50
+
+        status_param = request.query_params.get("status")
+        normalized_status = (
+            status_param.strip().lower() if isinstance(status_param, str) else None
+        )
+        if normalized_status not in {None, "active", "triggered"}:
+            normalized_status = None
+
+        reservations = store.list_purchase_reservations(
+            status=normalized_status,  # type: ignore[arg-type]
+            limit=limit,
+        )
+        rows = []
+        for reservation in reservations:
+            rows.append(
+                (
+                    "<tr>"
+                    f"<td>{html.escape(reservation.id)}</td>"
+                    f"<td>{html.escape(reservation.product_id)}</td>"
+                    f"<td>{html.escape(reservation.condition_type)}</td>"
+                    f"<td>{html.escape(reservation.status)}</td>"
+                    f"<td>{html.escape(reservation.target_price or '-')}</td>"
+                    f"<td>{html.escape(reservation.current_price)}</td>"
+                    f"<td>{html.escape(reservation.current_availability)}</td>"
+                    "</tr>"
+                )
+            )
+
+        table_markup = (
+            (
+                "<table><thead><tr><th>ID</th><th>Product</th>"
+                "<th>Condition</th><th>Status</th><th>Target</th>"
+                "<th>Current Price</th><th>Availability</th></tr></thead>"
+                f"<tbody>{''.join(rows)}</tbody></table>"
+            )
+            if rows
+            else "<p>No reservations found.</p>"
+        )
+
+        content = f"""
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reservations</title>
+    <style>
+      body {{
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 24px;
+        background: #f5f8fc;
+        color: #0f172a;
+      }}
+      .card {{
+        max-width: 1100px;
+        margin: 0 auto;
+        background: #fff;
+        border: 1px solid #dbe4ef;
+        border-radius: 14px;
+        padding: 20px;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+      }}
+      table {{
+        width: 100%;
+        border-collapse: collapse;
+      }}
+      th, td {{
+        border-bottom: 1px solid #e2e8f0;
+        padding: 8px;
+        text-align: left;
+        font-size: 14px;
+      }}
+      th {{
+        background: #f8fafc;
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Purchase Reservations</h1>
+      {table_markup}
+    </div>
+  </body>
+</html>
+"""
+        return HTMLResponse(content)
+
     routes.extend(
         [
             Route("/checkouts/{checkout_id}", checkout_page),
             Route("/orders", orders_page),
             Route("/orders/{order_id}", order_page),
+            Route("/reservations", reservations_page),
             Route(
                 "/.well-known/ucp",
                 lambda _: FileResponse(base_path / "data" / "ucp.json"),

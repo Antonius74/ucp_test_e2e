@@ -61,6 +61,7 @@ export interface ChatMessage {
   text: string;
   products?: Product[];
   orders?: Checkout[];
+  purchaseReservations?: PurchaseReservation[];
   isLoading?: boolean;
   paymentMethods?: PaymentMethod[];
   isUserAction?: boolean;
@@ -90,6 +91,22 @@ export interface CheckoutTotal {
   type: string;
   display_text: string;
   amount: number;
+}
+
+export interface PurchaseReservation {
+  id: string;
+  product_id: string;
+  product_name: string;
+  condition_type: "price_drop" | "back_in_stock";
+  status: "active" | "triggered";
+  created_at: string;
+  trigger_reason?: string | null;
+  triggered_at?: string | null;
+  buyer_email?: string | null;
+  currency: string;
+  current_price: string;
+  target_price?: string | null;
+  current_availability: string;
 }
 
 export interface CheckoutItem {

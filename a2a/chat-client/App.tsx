@@ -24,6 +24,7 @@ import { CredentialProviderProxy } from "./mocks/credentialProviderProxy";
 import {
   type ChatMessage,
   type PaymentInstrument,
+  type PurchaseReservation,
   type ProtocolExchangeEvent,
   type Product,
   Sender,
@@ -293,6 +294,43 @@ function App() {
       quantity: 1,
     });
     handleSendMessage(actionPayload, { isUserAction: true });
+  };
+
+  const handleReserveOnPriceDrop = (productToReserve: Product) => {
+    const currentPrice = Number.parseFloat(productToReserve.offers.price || "0");
+    const suggestedTarget =
+      currentPrice > 0 ? Number((currentPrice * 0.9).toFixed(2)) : undefined;
+
+    const actionPayload: Record<string, unknown> = {
+      action: "reserve_on_price_drop",
+      product_id: productToReserve.productID,
+    };
+    if (suggestedTarget) {
+      actionPayload.target_price = suggestedTarget;
+    }
+    if (user_email) {
+      actionPayload.buyer_email = user_email;
+    }
+
+    handleSendMessage(
+      [{ type: "data", data: actionPayload }],
+      { isUserAction: true }
+    );
+  };
+
+  const handleReserveOnRestock = (productToReserve: Product) => {
+    const actionPayload: Record<string, unknown> = {
+      action: "reserve_on_restock",
+      product_id: productToReserve.productID,
+    };
+    if (user_email) {
+      actionPayload.buyer_email = user_email;
+    }
+
+    handleSendMessage(
+      [{ type: "data", data: actionPayload }],
+      { isUserAction: true }
+    );
   };
 
   const handleStartPayment = () => {
@@ -618,6 +656,20 @@ function App() {
             results?: Product[];
           };
           combinedBotMessage.products = productResults.results;
+        } else if (dataPayload?.["a2a.purchase_reservations"]) {
+          const reservations = dataPayload[
+            "a2a.purchase_reservations"
+          ] as PurchaseReservation[];
+          if (Array.isArray(reservations)) {
+            combinedBotMessage.purchaseReservations = reservations;
+          }
+        } else if (dataPayload?.["a2a.purchase_reservation"]) {
+          const reservation = dataPayload[
+            "a2a.purchase_reservation"
+          ] as PurchaseReservation;
+          if (reservation && typeof reservation === "object") {
+            combinedBotMessage.purchaseReservations = [reservation];
+          }
         } else if (dataPayload?.["a2a.orders"]) {
           const orders = dataPayload["a2a.orders"] as Checkout[];
           if (Array.isArray(orders)) {
@@ -642,6 +694,7 @@ function App() {
       const hasContent =
         combinedBotMessage.text ||
         combinedBotMessage.products ||
+        combinedBotMessage.purchaseReservations ||
         combinedBotMessage.orders ||
         combinedBotMessage.checkout;
       if (hasContent) {
@@ -698,6 +751,8 @@ function App() {
                   key={msg.id}
                   message={msg}
                   onAddToCart={handleAddToCheckout}
+                  onReservePriceDrop={handleReserveOnPriceDrop}
+                  onReserveRestock={handleReserveOnRestock}
                   onCheckout={
                     msg.checkout?.status !== "ready_for_complete"
                       ? handleStartPayment

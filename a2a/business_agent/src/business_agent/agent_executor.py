@@ -17,7 +17,7 @@
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -228,6 +228,20 @@ class ADKAgentExecutor(AgentExecutor):
             await event_queue.enqueue_event(
                 new_agent_parts_message(
                     direct_action_parts, context.context_id, None
+                )
+            )
+            return
+
+        fast_reservation_parts = self._try_fast_purchase_reservation(
+            context, query, trace_events
+        )
+        if fast_reservation_parts is not None:
+            fast_reservation_parts = self._attach_protocol_trace_part(
+                fast_reservation_parts, trace_events
+            )
+            await event_queue.enqueue_event(
+                new_agent_parts_message(
+                    fast_reservation_parts, context.context_id, None
                 )
             )
             return
@@ -582,6 +596,222 @@ class ADKAgentExecutor(AgentExecutor):
             return payment_instrument.model_dump(mode="json")
         return None
 
+    def _extract_email_from_query(self, query: str) -> str | None:
+        match = re.search(
+            r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+            query,
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+        return match.group(0).strip().lower()
+
+    def _extract_product_id_from_query(self, query: str) -> str | None:
+        for candidate in re.findall(r"\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b", query):
+            product = shop_agent.store.get_product(candidate.upper())
+            if product is not None:
+                return product.product_id
+        return None
+
+    def _resolve_product_for_reservation(self, query: str) -> Any | None:
+        product_id = self._extract_product_id_from_query(query)
+        if product_id:
+            return shop_agent.store.get_product(product_id)
+
+        search_results = shop_agent.store.search_products(query).results
+        if len(search_results) == 1:
+            return search_results[0]
+        return None
+
+    def _extract_price_threshold_from_query(self, query: str) -> float | None:
+        matches = re.findall(r"(?:\$|€)?\s*(\d+(?:[.,]\d{1,2})?)", query)
+        if not matches:
+            return None
+        try:
+            return float(matches[0].replace(",", "."))
+        except ValueError:
+            return None
+
+    def _is_reservation_listing_query(self, query: str) -> bool:
+        cleaned = query.strip().lower()
+        if not cleaned or cleaned.startswith("execute the tool action"):
+            return False
+        if "reservation" in cleaned or "alert" in cleaned:
+            return any(
+                hint in cleaned
+                for hint in {
+                    "my",
+                    "list",
+                    "show",
+                    "view",
+                    "all",
+                    "active",
+                    "triggered",
+                    "prenot",
+                    "avvis",
+                }
+            )
+        return "prenotazioni" in cleaned or "mie prenotazioni" in cleaned
+
+    def _reservation_intent(
+        self,
+        query: str,
+    ) -> Literal["price_drop", "back_in_stock"] | None:
+        cleaned = query.strip().lower()
+        if not cleaned or cleaned.startswith("execute the tool action"):
+            return None
+
+        reservation_hints = {
+            "reserve",
+            "reservation",
+            "notify",
+            "alert",
+            "prenota",
+            "prenotami",
+            "prenotare",
+            "avvisami",
+            "avvisa",
+            "notificami",
+        }
+        if not any(hint in cleaned for hint in reservation_hints):
+            return None
+
+        price_hints = {
+            "price",
+            "cheaper",
+            "drop",
+            "less",
+            "lower",
+            "under",
+            "budget",
+            "costa meno",
+            "meno di",
+            "sotto",
+            "raggiungibile",
+            "prezzo",
+            "ribasso",
+            "scende",
+        }
+        stock_hints = {
+            "stock",
+            "available",
+            "availability",
+            "back in stock",
+            "torna disponibile",
+            "disponibile",
+            "restock",
+            "riassort",
+        }
+        if any(hint in cleaned for hint in stock_hints):
+            return "back_in_stock"
+        if any(hint in cleaned for hint in price_hints):
+            return "price_drop"
+
+        # Default to price-drop reservations when user asks to reserve without a condition.
+        return "price_drop"
+
+    def _try_fast_purchase_reservation(
+        self,
+        context: RequestContext,
+        query: str,
+        trace_events: list[dict[str, Any]],
+    ) -> list[Part] | None:
+        """Fast path for creating and listing purchase reservations."""
+        if self._is_reservation_listing_query(query):
+            email = self._extract_email_from_query(query)
+            status: str | None = None
+            lowered = query.strip().lower()
+            if "active" in lowered or "attive" in lowered:
+                status = "active"
+            elif "triggered" in lowered or "attivate" in lowered:
+                status = "triggered"
+
+            action_payload: dict[str, Any] = {
+                "action": "list_purchase_reservations",
+                "limit": 20,
+            }
+            if email:
+                action_payload["buyer_email"] = email
+            if status:
+                action_payload["status"] = status
+
+            shop_request = self._build_shop_agent_request(
+                context=context,
+                parts=[{"type": "data", "data": action_payload}],
+            )
+            self._append_trace(
+                trace_events,
+                "a2a.fast_path.reservation.request",
+                query=query,
+                action=action_payload,
+                jsonrpc=shop_request,
+            )
+            response = shop_agent.handle_jsonrpc(shop_request)
+            self._append_trace(
+                trace_events,
+                "a2a.fast_path.reservation.response",
+                jsonrpc=response,
+            )
+            return self._subagent_response_to_parts(response)
+
+        intent = self._reservation_intent(query)
+        if intent is None:
+            return None
+
+        product = self._resolve_product_for_reservation(query)
+        if product is None:
+            message = (
+                "I can create the reservation, but I need the product ID. "
+                "Example: reserve BISC-001 when price is below 3.99."
+            )
+            self._append_trace(
+                trace_events,
+                "a2a.fast_path.reservation.missing_product",
+                query=query,
+            )
+            return [Part(root=TextPart(text=message))]
+
+        action_payload = {
+            "action": "reserve_on_restock"
+            if intent == "back_in_stock"
+            else "reserve_on_price_drop",
+            "product_id": product.product_id,
+        }
+        email = self._extract_email_from_query(query)
+        if email:
+            action_payload["buyer_email"] = email
+        if intent == "price_drop":
+            threshold = self._extract_price_threshold_from_query(query)
+            if threshold is not None:
+                action_payload["target_price"] = threshold
+
+        shop_request = self._build_shop_agent_request(
+            context=context,
+            parts=[{"type": "data", "data": action_payload}],
+        )
+        self._append_trace(
+            trace_events,
+            "a2a.fast_path.reservation.request",
+            query=query,
+            action=action_payload,
+            jsonrpc=shop_request,
+        )
+        response = shop_agent.handle_jsonrpc(shop_request)
+        self._append_trace(
+            trace_events,
+            "a2a.fast_path.reservation.response",
+            jsonrpc=response,
+        )
+        parts = self._subagent_response_to_parts(response)
+        self._append_trace(
+            trace_events,
+            "a2a.fast_path.reservation.completed",
+            reservation_intent=intent,
+            execution_mode="fast_path_reservation",
+            adk_runner_used=False,
+        )
+        return parts
+
     def _is_order_lookup_query(self, query: str) -> bool:
         """Return True when the query is asking for existing orders."""
         cleaned = query.strip().lower()
@@ -829,6 +1059,9 @@ class ADKAgentExecutor(AgentExecutor):
             "get_latest_order",
             "get_order",
             "list_orders",
+            "reserve_on_price_drop",
+            "reserve_on_restock",
+            "list_purchase_reservations",
             "start_payment",
             "update_customer_details",
             "complete_checkout",

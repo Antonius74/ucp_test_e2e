@@ -25,12 +25,15 @@ import CheckoutComponent from "./Checkout";
 import PaymentConfirmationComponent from "./PaymentConfirmation";
 import PaymentMethodSelector from "./PaymentMethodSelector";
 import OrderHistory from "./OrderHistory";
+import PurchaseReservations from "./PurchaseReservations";
 import ProductCard from "./ProductCard";
 import UserLogo from "./UserLogo";
 
 interface ChatMessageProps {
   message: ChatMessage;
   onAddToCart?: (product: Product) => Promise<void> | void;
+  onReservePriceDrop?: (product: Product) => Promise<void> | void;
+  onReserveRestock?: (product: Product) => Promise<void> | void;
   onCheckout?: () => void;
   onSelectPaymentMethod?: (selectedMethod: string) => void;
   onConfirmPayment?: (paymentInstrument: PaymentInstrument) => void;
@@ -61,6 +64,8 @@ function TypingIndicator() {
 function ChatMessageComponent({
   message,
   onAddToCart,
+  onReservePriceDrop,
+  onReserveRestock,
   onCheckout,
   onSelectPaymentMethod,
   onConfirmPayment,
@@ -130,10 +135,16 @@ function ChatMessageComponent({
                   key={product.productID}
                   product={product}
                   onAddToCart={onAddToCart}
+                  onReservePriceDrop={onReservePriceDrop}
+                  onReserveRestock={onReserveRestock}
                 />
               ))}
             </div>
           </div>
+        )}
+
+        {message.purchaseReservations && message.purchaseReservations.length > 0 && (
+          <PurchaseReservations reservations={message.purchaseReservations} />
         )}
 
         {message.orders && message.orders.length > 0 && (

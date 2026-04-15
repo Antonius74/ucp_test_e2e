@@ -611,6 +611,46 @@ class A2AOllamaE2ETest(unittest.TestCase):
         self.assertIn("a2a.fast_path.orders.request", trace_stages)
         self.assertIn("a2a.fast_path.orders.response", trace_stages)
 
+    def test_price_drop_reservation_action_returns_structured_payload(self) -> None:
+        result = self._send_message(
+            json.dumps(
+                {
+                    "action": "reserve_on_price_drop",
+                    "product_id": "BISC-001",
+                    "target_price": 3.99,
+                    "buyer_email": "alerts@example.com",
+                }
+            )
+        )
+        parts = _extract_parts(result)
+        reservation = _find_data(parts, "a2a.purchase_reservation")
+        self.assertIsInstance(reservation, dict)
+        self.assertEqual(reservation.get("condition_type"), "price_drop")
+        self.assertEqual(reservation.get("status"), "active")
+        self.assertEqual(reservation.get("target_price"), "$3.99")
+        self.assertEqual(reservation.get("buyer_email"), "alerts@example.com")
+
+    def test_natural_language_reservation_uses_fast_path(self) -> None:
+        result = self._send_message(
+            "reserve COFFEE-001 when back in stock for alerts@example.com"
+        )
+        parts = _extract_parts(result)
+        reservation = _find_data(parts, "a2a.purchase_reservation")
+        self.assertIsInstance(reservation, dict)
+        self.assertEqual(reservation.get("product_id"), "COFFEE-001")
+        self.assertEqual(reservation.get("condition_type"), "back_in_stock")
+        self.assertEqual(reservation.get("status"), "active")
+
+        protocol_trace = _find_data(parts, "a2a.protocol_trace")
+        self.assertIsInstance(protocol_trace, list)
+        trace_stages = {
+            event.get("stage")
+            for event in protocol_trace
+            if isinstance(event, dict)
+        }
+        self.assertIn("a2a.fast_path.reservation.request", trace_stages)
+        self.assertIn("a2a.fast_path.reservation.response", trace_stages)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
