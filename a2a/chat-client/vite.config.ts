@@ -29,6 +29,11 @@ export default defineConfig(() => {
           rewrite: (path) => path.replace(/^\/api/, ""),
           secure: false,
         },
+        "/orders": {
+          target: "http://localhost:10999",
+          changeOrigin: true,
+          secure: false,
+        },
       },
     },
     plugins: [react()],

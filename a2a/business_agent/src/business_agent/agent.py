@@ -15,9 +15,11 @@
 """UCP."""
 
 import logging
+import os
 from typing import Any
 from a2a.types import TaskState
 from a2a.utils import get_message_text
+from dotenv import load_dotenv
 from google.adk.agents import Agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.tools.base_tool import BaseTool
@@ -25,6 +27,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 from ucp_sdk.models.schemas.shopping.types.buyer import Buyer
 from ucp_sdk.models.schemas.shopping.types.postal_address import PostalAddress
+from .a2a_subagents import MerchantAgentA2A, ShopAgentA2A
 from .a2a_extensions import UcpExtension
 from .constants import (
     ADK_EXTENSIONS_STATE_KEY,
@@ -41,7 +44,19 @@ from .store import RetailStore
 
 
 store = RetailStore()
-mpp = MockPaymentProcessor()
+shop_agent = ShopAgentA2A(store=store)
+merchant_agent = MerchantAgentA2A()
+mpp = MockPaymentProcessor(merchant_agent=merchant_agent)
+load_dotenv()
+
+DEFAULT_AGENT_MODEL = "ollama/gpt-oss:120b-cloud"
+AGENT_MODEL_ENV_VAR = "BUSINESS_AGENT_MODEL"
+
+
+def get_configured_model_name() -> str:
+    """Return the configured model name for the shopper agent."""
+    model_name = os.getenv(AGENT_MODEL_ENV_VAR, DEFAULT_AGENT_MODEL).strip()
+    return model_name or DEFAULT_AGENT_MODEL
 
 
 def _create_error_response(message: str) -> dict:
@@ -423,21 +438,20 @@ def modify_output_after_agent(
 
 root_agent = Agent(
     name="shopper_agent",
-    model="gemini-3-flash-preview",
+    model=get_configured_model_name(),
     description="Agent to help with shopping",
     instruction=(
-        "You are a helpful agent who can help user with shopping actions such"
-        " as searching the catalog, add to checkout session, complete checkout"
-        " and handle order placed event.Given the user ask, plan ahead and"
-        " invoke the tools available to complete the user's ask. Always make"
-        " sure you have completed all aspects of the user's ask. If the user"
-        " says add to my list or remove from the list, add or remove from the"
-        " cart, add the product or remove the product from the checkout"
-        " session. If the user asks to add any items to the checkout session,"
-        " search for the products and then add the matching products to"
-        " checkout session.If the user asks to replace products,"
-        " use remove_from_checkout and add_to_checkout tools to replace the"
-        " products to match the user request"
+        "You are a helpful shopping agent. Always complete user requests by"
+        " invoking the available tools instead of only replying with text."
+        " If the message includes an explicit action payload with an 'action'"
+        " field (for example add_to_checkout, update_checkout, start_payment,"
+        " update_customer_details, complete_checkout), call the matching tool"
+        " immediately with the provided arguments. Never echo the raw JSON"
+        " action back to the user. If the user asks to add or remove items,"
+        " update the checkout accordingly. If they ask to replace items, call"
+        " remove_from_checkout and add_to_checkout to apply the change."
+        " When payment data is already present in session state and the user"
+        " asks to complete checkout, call complete_checkout."
     ),
     tools=[
         search_shopping_catalog,

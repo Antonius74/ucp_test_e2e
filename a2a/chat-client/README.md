@@ -22,3 +22,16 @@
    `npm install`
 2. Run the app:
    `npm run dev`
+
+## Protocol Dashboard
+
+The UI includes a built-in protocol dashboard that logs:
+- Outbound JSON-RPC `message/send` requests
+- Inbound JSON-RPC responses
+- A2A/UCP internal trace events (`a2a.protocol_trace`)
+- Payment token fields carried in the exchange
+- Visual call-flow timeline for each exchange, including ADK Runner usage (`Yes/No`)
+
+Use the `Trace` toggle in the right panel to open/close it and `Clear` to reset logs.
+
+For demo convenience, clicking `Start Payment` auto-sends a UCP `update_customer_details` action with sample fulfillment data and the current user email, so the checkout can move to `ready_for_complete` without manual JSON input.

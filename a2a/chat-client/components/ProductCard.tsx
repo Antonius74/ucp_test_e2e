@@ -26,27 +26,27 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, onAddToCart }) => {
   const handleAddToCartClick = () => onAddToCart?.(product);
 
   return (
-    <div className="bg-white rounded-lg shadow-md overflow-hidden w-64 flex-shrink-0">
+    <div className="product-card bg-white rounded-xl shadow-md overflow-hidden border border-slate-200">
       <img
         src={product.image[0]}
         alt={product.name}
-        className="w-full h-48 object-cover"
+        className="w-full h-44 object-cover"
       />
       <div className="p-4">
-        <h3
-          className="text-lg font-semibold text-gray-800 truncate"
-          title={product.name}
-        >
+        <h3 className="text-lg font-semibold text-slate-800 truncate" title={product.name}>
           {product.name}
         </h3>
-        <p className="text-sm text-gray-600">{product.brand.name}</p>
+        <p className="text-sm text-slate-600">{product.brand.name}</p>
+        <p className="mt-2 min-h-10 text-sm leading-5 text-slate-600">
+          {product.description}
+        </p>
         <div className="flex justify-between items-center mt-3">
-          <p className="text-lg font-bold text-gray-900">
+          <p className="text-lg font-bold text-slate-900">
             {product.offers.priceCurrency === "EUR" ? "€" : "$"}
             {product.offers.price}
           </p>
           <span
-            className={`px-2 py-1 text-xs font-semibold rounded-full ${isAvailable ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}
+            className={`px-2 py-1 text-xs font-semibold rounded-full ${isAvailable ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}
           >
             {isAvailable ? "In Stock" : "Out of Stock"}
           </span>
@@ -55,7 +55,7 @@ const ProductCard: React.FC<ProductCardProps> = ({ product, onAddToCart }) => {
           type="button"
           onClick={handleAddToCartClick}
           disabled={!isAvailable || !onAddToCart}
-          className="block w-full text-center bg-blue-500 text-white py-2 rounded-md mt-4 hover:bg-blue-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+          className="mt-4 block w-full rounded-md bg-blue-600 py-2 text-center font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-400"
         >
           Add to Checkout
         </button>

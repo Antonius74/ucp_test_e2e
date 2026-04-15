@@ -1,0 +1,103 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+
+:root {
+  --bg-top: #f8fbff;
+  --bg-bottom: #eef4fb;
+  --agent-bubble: #f7f9fc;
+  --user-bubble-a: #3d8bff;
+  --user-bubble-b: #1f6fef;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    "Manrope",
+    "Segoe UI",
+    "Helvetica Neue",
+    sans-serif;
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+  color: #1e293b;
+}
+
+.app-shell {
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+}
+
+.chat-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.chat-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-scroll::-webkit-scrollbar-thumb {
+  background: #cfd9e8;
+  border-radius: 999px;
+}
+
+.protocol-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.protocol-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.protocol-scroll::-webkit-scrollbar-thumb {
+  background: #c6d4e8;
+  border-radius: 999px;
+}
+
+.protocol-dashboard {
+  transition:
+    width 0.2s ease,
+    max-height 0.2s ease;
+}
+
+.protocol-json {
+  margin: 0;
+  overflow-x: auto;
+  border-radius: 10px;
+  border: 1px solid #d8e2f0;
+  background: #f1f5fb;
+  padding: 0.65rem;
+  color: #1e293b;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-bubble {
+  background: var(--agent-bubble);
+  border: 1px solid #dbe4ef;
+  color: #1f2937;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.07);
+}
+
+.user-bubble {
+  background: linear-gradient(140deg, var(--user-bubble-a), var(--user-bubble-b));
+  color: #fff;
+}
+
+.catalog-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.product-card {
+  width: 100%;
+  min-width: 0;
+}

@@ -20,14 +20,37 @@ Example agent implementing A2A Extension for UCP
 
 ### Pre-requisites:
 
-1. Python 3.13
-2. UV
-3. Gemini API Key (The agent uses Gemini model to generate responses)
+1. Python 3.10+
+2. [Ollama](https://ollama.com/) running locally
+3. Pulled model (default): `gpt-oss:120b-cloud`
 
 ## Quick Start
 
-1. Run `uv sync`
-2. Copy env.example to .env and update it with relevant Gemini API key.
-3. Run `uv run business_agent`
-4. This starts the Cymbal Retail Agent on port 10999. You can verify by accessing
-   the agent card at http://localhost:10999/.well-known/agent-card.json
+1. Start Ollama:
+
+   ```bash
+   /usr/local/bin/ollama serve
+   ```
+
+2. In a new terminal, set up Python env and install dependencies:
+
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/python -m pip install -e .
+   ```
+
+3. Copy env file and keep defaults (Ollama):
+
+   ```bash
+   cp env.example .env
+   ```
+
+4. Run the server:
+
+   ```bash
+   .venv/bin/python -m business_agent.main
+   ```
+
+5. Verify endpoints:
+   - Agent Card: http://localhost:10999/.well-known/agent-card.json
+   - UCP Profile: http://localhost:10999/.well-known/ucp

@@ -103,7 +103,7 @@ export class CredentialProviderProxy {
       handler_name: this.handler_name,
       credential: {
         type: "token",
-        token: `mock_token_${randomId}`,
+        token: `tok_ucp_${randomId}`,
       },
     };
   }

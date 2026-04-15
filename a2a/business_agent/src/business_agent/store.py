@@ -16,7 +16,9 @@
 
 from decimal import Decimal
 import json
+import os
 from pathlib import Path
+import re
 from uuid import uuid4
 from pydantic import AnyUrl
 from ucp_sdk.models.schemas.shopping.checkout_resp import (
@@ -62,6 +64,7 @@ from .models.product_types import ImageObject, Product, ProductResults
 
 
 DEFAULT_CURRENCY = "USD"
+DEFAULT_ORDER_BASE_URL = "http://127.0.0.1:10999"
 
 
 class RetailStore:
@@ -109,11 +112,84 @@ class RetailStore:
         """
         # return existing products for now
         all_products = list(self._products.values())
+        cleaned_query = query.strip().lower()
+        if not cleaned_query:
+            return ProductResults(results=all_products)
 
         matching_products = {}
+        stopwords = {
+            "a",
+            "an",
+            "and",
+            "any",
+            "are",
+            "can",
+            "could",
+            "do",
+            "for",
+            "i",
+            "in",
+            "is",
+            "it",
+            "kind",
+            "kinds",
+            "me",
+            "of",
+            "show",
+            "tell",
+            "the",
+            "to",
+            "what",
+            "which",
+            "would",
+            "you",
+            "your",
+        }
+        generic_catalog_tokens = {
+            "available",
+            "catalog",
+            "catalogue",
+            "item",
+            "items",
+            "list",
+            "all",
+            "have",
+            "sell",
+            "buy",
+            "purchase",
+            "something",
+            "anything",
+            "stuff",
+            "product",
+            "products",
+            "prod",
+            "stock",
+            "what",
+            "which",
+            "kind",
+            "kinds",
+            "type",
+            "types",
+            "show",
+            "in",
+        }
 
-        keywords = query.lower().split()
-        for keyword in keywords:
+        keywords = re.findall(r"[a-z0-9]+", cleaned_query)
+        informative_keywords = [token for token in keywords if token not in stopwords]
+        if not informative_keywords:
+            return ProductResults(results=all_products)
+        if all(token in generic_catalog_tokens for token in informative_keywords):
+            return ProductResults(results=all_products)
+
+        searchable_keywords = [
+            token
+            for token in informative_keywords
+            if token not in generic_catalog_tokens
+        ]
+        if not searchable_keywords:
+            return ProductResults(results=all_products)
+
+        for keyword in searchable_keywords:
             for product in all_products:
                 if product.product_id not in matching_products and (
                     keyword in product.name.lower()
@@ -123,6 +199,8 @@ class RetailStore:
 
         product_list = list(matching_products.values())
         if not product_list:
+            if any(token in generic_catalog_tokens for token in informative_keywords):
+                return ProductResults(results=all_products)
             return ProductResults(results=[], content="No products found")
 
         return ProductResults(results=product_list)
@@ -296,7 +374,10 @@ class RetailStore:
 
         for line_item in checkout.line_items:
             if line_item.item.id == product_id:
-                line_item.quantity = quantity
+                if quantity <= 0:
+                    checkout.line_items.remove(line_item)
+                else:
+                    line_item.quantity = quantity
                 break
 
         self._recalculate_checkout(checkout)
@@ -395,7 +476,12 @@ class RetailStore:
 
         totals.append(Total(type="total", display_text="Total", amount=final_total))
         checkout.totals = totals
-        checkout.continue_url = AnyUrl(f"https://example.com/checkout?id={checkout.id}")
+        checkout_base_url = os.getenv("ORDER_BASE_URL", DEFAULT_ORDER_BASE_URL).rstrip(
+            "/"
+        )
+        checkout.continue_url = AnyUrl(
+            f"{checkout_base_url}/checkouts/{checkout.id}"
+        )
 
     def add_delivery_address(
         self, checkout_id: str, address: PostalAddress
@@ -496,17 +582,24 @@ class RetailStore:
             raise ValueError(f"Checkout with ID {checkout_id} not found")
 
         order_id = f"ORD-{checkout_id}"
+        order_base_url = os.getenv("ORDER_BASE_URL", DEFAULT_ORDER_BASE_URL).rstrip(
+            "/"
+        )
 
         checkout.status = "completed"
         checkout.order = OrderConfirmation(
             id=order_id,
-            permalink_url=f"https://example.com/order?id={order_id}",
+            permalink_url=f"{order_base_url}/orders/{order_id}",
         )
 
         self._orders[order_id] = checkout
         # Clear the checkout after placing the order
         del self._checkouts[checkout_id]
         return checkout
+
+    def get_order(self, order_id: str) -> Checkout | None:
+        """Retrieve a completed order by ID."""
+        return self._orders.get(order_id)
 
     def _get_fulfillment_options(self) -> list[FulfillmentOptionResponse]:
         """Return a list of available fulfillment options.

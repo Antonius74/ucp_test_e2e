@@ -67,6 +67,24 @@ export interface ChatMessage {
   paymentInstrument?: PaymentInstrument;
 }
 
+export type ProtocolDirection = "outbound" | "inbound";
+
+export interface ProtocolExchangeEvent {
+  id: string;
+  timestamp: string;
+  direction: ProtocolDirection;
+  title: string;
+  endpoint: string;
+  httpMethod: string;
+  httpStatus?: number;
+  headers: Record<string, string>;
+  jsonrpcPayload: unknown;
+  contextId?: string | null;
+  taskId?: string | null;
+  tokens?: string[];
+  protocolTrace?: unknown;
+}
+
 export interface CheckoutTotal {
   type: string;
   display_text: string;

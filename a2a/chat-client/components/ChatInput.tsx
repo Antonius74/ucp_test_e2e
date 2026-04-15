@@ -49,24 +49,24 @@ function ChatInput({ onSendMessage, isLoading }: ChatInputProps) {
   };
 
   return (
-    <div className="bg-white p-3 border-t border-gray-200 shadow-t-sm flex-shrink-0">
+    <div className="flex-shrink-0 border-t border-slate-200 bg-white/95 p-3 shadow-t-sm backdrop-blur">
       <form
         onSubmit={handleSubmit}
-        className="flex items-center space-x-3 max-w-4xl mx-auto"
+        className="mx-auto flex max-w-5xl items-center space-x-3"
       >
         <input
           type="text"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           placeholder="Type your message..."
-          className="flex-grow p-3 border border-gray-300 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-400 transition"
+          className="flex-grow rounded-full border border-slate-300 bg-white p-3 transition focus:outline-none focus:ring-2 focus:ring-blue-400"
           disabled={isLoading}
           autoComplete="off"
         />
         <button
           type="submit"
           disabled={isLoading || !inputValue.trim()}
-          className="bg-blue-500 text-white p-3 rounded-full disabled:bg-blue-300 disabled:cursor-not-allowed hover:bg-blue-600 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2"
+          className="rounded-full bg-blue-600 p-3 text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-blue-300"
           aria-label="Send message"
         >
           <SendIcon />

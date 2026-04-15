@@ -17,12 +17,14 @@ import { useEffect, useRef, useState } from "react";
 import ChatInput from "./components/ChatInput";
 import ChatMessageComponent from "./components/ChatMessage";
 import Header from "./components/Header";
+import ProtocolDashboard from "./components/ProtocolDashboard";
 import { appConfig } from "./config";
 import { CredentialProviderProxy } from "./mocks/credentialProviderProxy";
 
 import {
   type ChatMessage,
   type PaymentInstrument,
+  type ProtocolExchangeEvent,
   type Product,
   Sender,
   type Checkout,
@@ -32,6 +34,37 @@ import {
 type RequestPart =
   | { type: "text"; text: string }
   | { type: "data"; data: Record<string, unknown> };
+
+function isToolCallText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return false;
+  }
+
+  const containsToolCallShape =
+    trimmed.includes('"name"') &&
+    (trimmed.includes('"parameters"') ||
+      trimmed.includes('"action"') ||
+      trimmed.includes("get_") ||
+      trimmed.includes("add_to_checkout") ||
+      trimmed.includes("start_payment") ||
+      trimmed.includes("complete_checkout"));
+
+  if (containsToolCallShape) {
+    return true;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    return (
+      typeof parsed?.name === "string" &&
+      (parsed.parameters === undefined ||
+        typeof parsed.parameters === "object")
+    );
+  } catch {
+    return /^{"name"\s*:\s*".+"/.test(trimmed);
+  }
+}
 
 function createChatMessage(
   sender: Sender,
@@ -43,6 +76,145 @@ function createChatMessage(
     sender,
     text,
     ...props,
+  };
+}
+
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function stripMarkdownTableRows(text: string): string {
+  const lines = text.split("\n");
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return true;
+    }
+
+    // Remove markdown table rows and separators.
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      return false;
+    }
+    if (/^[|:\-\s]+$/.test(trimmed) && trimmed.includes("-")) {
+      return false;
+    }
+    return true;
+  });
+
+  return normalizeWhitespace(filtered.join("\n"));
+}
+
+function formatCatalogNarrative(
+  rawText: string,
+  products?: Product[]
+): string {
+  const normalized = normalizeWhitespace(rawText);
+  if (!products || products.length === 0) {
+    return normalized;
+  }
+
+  const withoutTable = stripMarkdownTableRows(normalized);
+  const lower = normalized.toLowerCase();
+  const looksVerboseCatalog =
+    normalized.length > 520 ||
+    lower.includes("| product id |") ||
+    lower.includes("quick look at what") ||
+    lower.includes("all of these items are in stock") ||
+    lower.includes("let me know which ones you'd like");
+
+  if (!withoutTable || looksVerboseCatalog) {
+    return `I found ${products.length} products for you. Browse the cards below and tap "Add to Checkout" on any item.`;
+  }
+
+  return withoutTable;
+}
+
+function extractTokens(value: unknown, collector: Set<string>): void {
+  if (!value || typeof value !== "object") {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      extractTokens(item, collector);
+    }
+    return;
+  }
+
+  const obj = value as Record<string, unknown>;
+  for (const [key, nested] of Object.entries(obj)) {
+    if (key === "token" && typeof nested === "string") {
+      collector.add(nested);
+    } else {
+      extractTokens(nested, collector);
+    }
+  }
+}
+
+function getPartData(
+  part: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  if (part.data && typeof part.data === "object") {
+    return part.data as Record<string, unknown>;
+  }
+  if (
+    part.root &&
+    typeof part.root === "object" &&
+    (part.root as Record<string, unknown>).data &&
+    typeof (part.root as Record<string, unknown>).data === "object"
+  ) {
+    return (part.root as Record<string, unknown>).data as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function extractProtocolTrace(
+  parts: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  const trace: Record<string, unknown>[] = [];
+  for (const part of parts) {
+    const data = getPartData(part);
+    const protocolTrace = data?.["a2a.protocol_trace"];
+    if (Array.isArray(protocolTrace)) {
+      for (const entry of protocolTrace) {
+        if (entry && typeof entry === "object") {
+          trace.push(entry as Record<string, unknown>);
+        }
+      }
+    }
+  }
+  return trace;
+}
+
+function toHeadersObject(headers: Headers): Record<string, string> {
+  const obj: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    obj[key] = value;
+  });
+  return obj;
+}
+
+function isEmailLike(text: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text.trim());
+}
+
+function deriveNameFromEmail(email: string): {
+  firstName: string;
+  lastName: string;
+} {
+  const localPart = email.split("@")[0] || "guest";
+  const normalized = localPart.replace(/[^a-zA-Z0-9._-]/g, " ").trim();
+  const chunks = normalized
+    .split(/[._\-\s]+/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+  const firstRaw = chunks[0] || "Guest";
+  const lastRaw = chunks[1] || "Buyer";
+  const toName = (value: string) =>
+    value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+  return {
+    firstName: toName(firstRaw),
+    lastName: toName(lastRaw),
   };
 }
 
@@ -64,6 +236,10 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [contextId, setContextId] = useState<string | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [protocolEvents, setProtocolEvents] = useState<ProtocolExchangeEvent[]>(
+    []
+  );
+  const [isProtocolDashboardOpen, setIsProtocolDashboardOpen] = useState(true);
   const credentialProvider = useRef(new CredentialProviderProxy());
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -76,6 +252,40 @@ function App() {
     }
   }, [messages]);
 
+  const appendProtocolEvent = (
+    event: Omit<ProtocolExchangeEvent, "id" | "timestamp">
+  ) => {
+    const nextEvent: ProtocolExchangeEvent = {
+      ...event,
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+    };
+    setProtocolEvents((prev) => [...prev, nextEvent]);
+  };
+
+  const buildCustomerDetailsAction = (
+    emailOverride?: string | null
+  ): RequestPart[] => {
+    const resolvedEmail = (emailOverride || user_email || "buyer@example.com").trim();
+    const { firstName, lastName } = deriveNameFromEmail(resolvedEmail);
+    return [
+      {
+        type: "data",
+        data: {
+          action: "update_customer_details",
+          first_name: firstName,
+          last_name: lastName,
+          street_address: "1 Market St",
+          address_locality: "San Francisco",
+          address_region: "CA",
+          postal_code: "94105",
+          address_country: "US",
+          email: resolvedEmail,
+        },
+      },
+    ];
+  };
+
   const handleAddToCheckout = (productToAdd: Product) => {
     const actionPayload = JSON.stringify({
       action: "add_to_checkout",
@@ -86,8 +296,8 @@ function App() {
   };
 
   const handleStartPayment = () => {
-    const actionPayload = JSON.stringify({ action: "start_payment" });
-    handleSendMessage(actionPayload, {
+    const updateDetailsParts = buildCustomerDetailsAction();
+    handleSendMessage(updateDetailsParts, {
       isUserAction: true,
     });
   };
@@ -198,7 +408,12 @@ function App() {
           type: "data",
           data: {
             "a2a.ucp.checkout.payment_data": paymentInstrument,
-            "a2a.ucp.checkout.risk_signals": { data: "some risk data" },
+            "a2a.ucp.checkout.risk_signals": {
+              merchant_id: "merchant_ucp_demo",
+              gateway_hint: "mock.ucp.gateway",
+              risk_score: 12,
+              session_id: crypto.randomUUID(),
+            },
           },
         },
       ];
@@ -225,13 +440,32 @@ function App() {
   ) => {
     if (isLoading) return;
 
-    const userMessage = createChatMessage(
-      Sender.USER,
+    let normalizedMessageContent: string | RequestPart[] = messageContent;
+    let userMessageText =
       options?.isUserAction
-        ? "<User Action>"
+        ? ""
         : typeof messageContent === "string"
           ? messageContent
-          : "Sent complex data"
+          : "Sent complex data";
+
+    const latestCheckout = messages
+      .slice()
+      .reverse()
+      .find((message) => !!message.checkout)?.checkout;
+    const shouldAutofillFromEmail =
+      typeof messageContent === "string" &&
+      isEmailLike(messageContent) &&
+      !!latestCheckout &&
+      latestCheckout.status !== "completed";
+
+    if (shouldAutofillFromEmail) {
+      normalizedMessageContent = buildCustomerDetailsAction(messageContent);
+      userMessageText = messageContent;
+    }
+
+    const userMessage = createChatMessage(
+      Sender.USER,
+      userMessageText
     );
     if (userMessage.text) {
       // Only add if there's text
@@ -245,9 +479,9 @@ function App() {
 
     try {
       const requestParts =
-        typeof messageContent === "string"
-          ? [{ type: "text", text: messageContent }]
-          : messageContent;
+        typeof normalizedMessageContent === "string"
+          ? [{ type: "text", text: normalizedMessageContent }]
+          : normalizedMessageContent;
 
       const requestParams: {
         message: {
@@ -287,16 +521,32 @@ function App() {
         "UCP-Agent":
           'profile="http://localhost:3000/profile/agent_profile.json"',
       };
+      const mergedHeaders = { ...defaultHeaders, ...options?.headers };
+      const jsonRpcPayload = {
+        jsonrpc: "2.0",
+        id: crypto.randomUUID(),
+        method: "message/send",
+        params: requestParams,
+      };
+
+      const outboundTokens = new Set<string>();
+      extractTokens(requestParts, outboundTokens);
+      appendProtocolEvent({
+        direction: "outbound",
+        title: "A2A message/send request",
+        endpoint: "/api",
+        httpMethod: "POST",
+        headers: mergedHeaders,
+        jsonrpcPayload: jsonRpcPayload,
+        contextId: requestParams.message.contextId || null,
+        taskId: requestParams.message.taskId || null,
+        tokens: [...outboundTokens],
+      });
 
       const response = await fetch("/api", {
         method: "POST",
-        headers: { ...defaultHeaders, ...options?.headers },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: crypto.randomUUID(),
-          method: "message/send",
-          params: requestParams,
-        }),
+        headers: mergedHeaders,
+        body: JSON.stringify(jsonRpcPayload),
       });
 
       if (!response.ok || !response.body) {
@@ -317,30 +567,70 @@ function App() {
         setTaskId(data.result.id);
       } else {
         //if not reset taskId
-        setTaskId(undefined);
+        setTaskId(null);
       }
 
       const combinedBotMessage = createChatMessage(Sender.MODEL, "");
+      const textParts: string[] = [];
 
-      const responseParts =
+      const responsePartsRaw =
         data.result?.parts || data.result?.status?.message?.parts || [];
+      const responseParts: Record<string, unknown>[] = Array.isArray(
+        responsePartsRaw
+      )
+        ? responsePartsRaw.filter(
+            (part: unknown): part is Record<string, unknown> =>
+              !!part && typeof part === "object"
+          )
+        : [];
+      const protocolTrace = extractProtocolTrace(responseParts);
+      const inboundTokens = new Set<string>();
+      extractTokens(data, inboundTokens);
+      extractTokens(protocolTrace, inboundTokens);
+      appendProtocolEvent({
+        direction: "inbound",
+        title: "A2A message/send response",
+        endpoint: "/api",
+        httpMethod: "POST",
+        httpStatus: response.status,
+        headers: toHeadersObject(response.headers),
+        jsonrpcPayload: data,
+        contextId: data.result?.contextId || null,
+        taskId: data.result?.id || null,
+        tokens: [...inboundTokens],
+        protocolTrace: protocolTrace.length > 0 ? protocolTrace : undefined,
+      });
 
       for (const part of responseParts) {
-        if (part.text) {
-          // Simple text
-          combinedBotMessage.text +=
-            (combinedBotMessage.text ? "\n" : "") + part.text;
-        } else if (part.data?.["a2a.product_results"]) {
-          // Product results
-          combinedBotMessage.text +=
-            (combinedBotMessage.text ? "\n" : "") +
-            (part.data["a2a.product_results"].content || "");
-          combinedBotMessage.products =
-            part.data["a2a.product_results"].results;
-        } else if (part.data?.["a2a.ucp.checkout"]) {
-          // Checkout
-          combinedBotMessage.checkout = part.data["a2a.ucp.checkout"];
+        const textValue = part.text;
+        if (typeof textValue === "string") {
+          if (isToolCallText(textValue)) {
+            continue;
+          }
+          textParts.push(textValue);
+          continue;
         }
+
+        const dataPayload = getPartData(part);
+        if (dataPayload?.["a2a.product_results"]) {
+          // Product results
+          const productResults = dataPayload["a2a.product_results"] as {
+            results?: Product[];
+          };
+          combinedBotMessage.products = productResults.results;
+        } else if (dataPayload?.["a2a.ucp.checkout"]) {
+          // Checkout
+          combinedBotMessage.checkout = dataPayload["a2a.ucp.checkout"] as Checkout;
+        }
+      }
+
+      const rawText = textParts.join("\n");
+      combinedBotMessage.text = formatCatalogNarrative(
+        rawText,
+        combinedBotMessage.products
+      );
+      if (!combinedBotMessage.text && combinedBotMessage.products?.length) {
+        combinedBotMessage.text = `I found ${combinedBotMessage.products.length} products for you.`;
       }
 
       const newMessages: ChatMessage[] = [];
@@ -364,6 +654,16 @@ function App() {
       }
     } catch (error) {
       console.error("Error sending message:", error);
+      appendProtocolEvent({
+        direction: "inbound",
+        title: "A2A transport error",
+        endpoint: "/api",
+        httpMethod: "POST",
+        headers: {},
+        jsonrpcPayload: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
       const errorMessage = createChatMessage(
         Sender.MODEL,
         "Sorry, something went wrong. Please try again."
@@ -378,34 +678,47 @@ function App() {
   const lastCheckoutIndex = messages.map((m) => !!m.checkout).lastIndexOf(true);
 
   return (
-    <div className="flex flex-col h-screen max-h-screen bg-white font-sans">
-      <Header logoUrl={appConfig.logoUrl} title={appConfig.name} />
-      <main
-        ref={chatContainerRef}
-        className="flex-grow overflow-y-auto p-4 md:p-6 space-y-2"
-      >
-        {messages.map((msg, index) => (
-          <ChatMessageComponent
-            key={msg.id}
-            message={msg}
-            onAddToCart={handleAddToCheckout}
-            onCheckout={
-              msg.checkout?.status !== "ready_for_complete"
-                ? handleStartPayment
-                : undefined
-            }
-            onSelectPaymentMethod={handlePaymentMethodSelected}
-            onConfirmPayment={handleConfirmPayment}
-            onCompletePayment={
-              msg.checkout?.status === "ready_for_complete"
-                ? handlePaymentMethodSelection
-                : undefined
-            }
-            isLastCheckout={index === lastCheckoutIndex}
-          ></ChatMessageComponent>
-        ))}
-      </main>
-      <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
+    <div className="app-shell flex flex-col h-screen max-h-screen font-sans">
+      <Header />
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <main
+            ref={chatContainerRef}
+            className="chat-scroll flex-grow overflow-y-auto p-4 md:p-6"
+          >
+            <div className="mx-auto w-full max-w-7xl space-y-2">
+              {messages.map((msg, index) => (
+                <ChatMessageComponent
+                  key={msg.id}
+                  message={msg}
+                  onAddToCart={handleAddToCheckout}
+                  onCheckout={
+                    msg.checkout?.status !== "ready_for_complete"
+                      ? handleStartPayment
+                      : undefined
+                  }
+                  onSelectPaymentMethod={handlePaymentMethodSelected}
+                  onConfirmPayment={handleConfirmPayment}
+                  onCompletePayment={
+                    msg.checkout?.status === "ready_for_complete"
+                      ? handlePaymentMethodSelection
+                      : undefined
+                  }
+                  isLastCheckout={index === lastCheckoutIndex}
+                ></ChatMessageComponent>
+              ))}
+            </div>
+          </main>
+          <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
+        </section>
+
+        <ProtocolDashboard
+          events={protocolEvents}
+          isOpen={isProtocolDashboardOpen}
+          onToggle={() => setIsProtocolDashboardOpen((prev) => !prev)}
+          onClear={() => setProtocolEvents([])}
+        />
+      </div>
     </div>
   );
 }

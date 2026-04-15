@@ -35,25 +35,25 @@ const PaymentConfirmationComponent: React.FC<PaymentConfirmationProps> = ({
   };
 
   return (
-    <div className="max-w-md bg-white rounded-lg shadow-lg p-4 border border-gray-200">
-      <h3 className="text-lg font-bold text-gray-800 mb-3">
+    <div className="mt-3 w-full max-w-3xl rounded-xl border border-slate-200 bg-white p-4 shadow-lg">
+      <h3 className="mb-3 text-lg font-bold text-slate-800">
         Confirm Your Purchase
       </h3>
-      <div className="flex justify-between items-center text-md mb-4">
+      <div className="mb-4 flex items-center justify-between text-md">
         <span>Selected Payment Method</span>
         <span>
           {paymentInstrument.brand.toUpperCase()} ending in{" "}
           {paymentInstrument.last_digits}
         </span>
       </div>
-      <p className="text-gray-600 mb-4">
+      <p className="mb-4 text-slate-600">
         Please confirm to complete your purchase.
       </p>
       <button
         type="button"
         onClick={handleConfirmClick}
         disabled={isConfirming}
-        className="flex justify-center items-center w-full text-center bg-green-500 text-white py-2 rounded-md hover:bg-green-600 transition-colors disabled:bg-green-400 disabled:cursor-wait"
+        className="flex w-full items-center justify-center rounded-md bg-emerald-600 py-2 text-center text-white transition-colors hover:bg-emerald-700 disabled:cursor-wait disabled:bg-emerald-400"
       >
         {isConfirming ? (
           <>

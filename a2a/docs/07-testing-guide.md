@@ -19,9 +19,11 @@
 
 ```bash
 cd a2a/business_agent
-uv sync
-cp env.example .env          # Add GOOGLE_API_KEY
-uv run business_agent        # Starts on :10999
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+cp env.example .env
+/usr/local/bin/ollama serve   # run in another terminal
+.venv/bin/python -m business_agent.main  # Starts on :10999
 ```
 
 ### 2. Start Frontend
@@ -43,6 +45,13 @@ curl -s http://localhost:10999/.well-known/ucp | jq .
 
 # Client profile (client capabilities)
 curl -s http://localhost:3000/profile/agent_profile.json | jq .
+```
+
+### 4. Run Automated E2E Tests
+
+```bash
+cd a2a/business_agent
+.venv/bin/python -m unittest -v tests/test_a2a_e2e.py
 ```
 
 ## Testing Workflows
@@ -140,7 +149,7 @@ curl -X POST http://localhost:10999/ \
 
 | Issue                  | Likely Cause                  | Fix                                                               |
 | ---------------------- | ----------------------------- | ----------------------------------------------------------------- |
-| Server won't start     | Missing `GOOGLE_API_KEY`      | Add key to `.env` file                                            |
+| Server won't start     | Ollama not running            | Start `/usr/local/bin/ollama serve`                               |
 | "Profile fetch failed" | Frontend not running          | Start chat-client on :3000                                        |
 | "Version unsupported"  | Profile version mismatch      | Align `version` in both `ucp.json` and `agent_profile.json`       |
 | "Checkout not found"   | Session expired or no items   | Call `add_to_checkout` first                                      |
@@ -155,10 +164,10 @@ curl -X POST http://localhost:10999/ \
 | Error Message                      | Cause                                   | Solution                                         |
 | ---------------------------------- | --------------------------------------- | ------------------------------------------------ |
 | `Address already in use :10999`    | Agent already running or port in use    | `kill $(lsof -t -i:10999)` or use different port |
-| `GOOGLE_API_KEY not found`         | Missing or empty .env file              | Create `.env` from `env.example`, add your key   |
-| `No module named 'business_agent'` | Not in virtualenv or deps not installed | Run `uv sync` in `business_agent/` directory     |
+| `Connection refused :11434`        | Ollama server not running               | Run `/usr/local/bin/ollama serve`                |
+| `No module named 'business_agent'` | Not in virtualenv or deps not installed | Run `.venv/bin/python -m pip install -e .`       |
 | `npm ERR! ENOENT package.json`     | Wrong directory                         | `cd chat-client` before running `npm install`    |
-| `Connection refused :10999`        | Backend not running                     | Start backend first with `uv run business_agent` |
+| `Connection refused :10999`        | Backend not running                     | Start backend first with `.venv/bin/python -m business_agent.main` |
 
 ### Runtime Errors
 
@@ -180,7 +189,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 # Step 2: Restart agent and check logs
-uv run business_agent
+.venv/bin/python -m business_agent.main
 
 # Step 3: Look for specific error messages in output
 ```
@@ -255,7 +264,9 @@ def my_tool(tool_context: ToolContext, query: str) -> dict:
 
 | Variable         | Required | Purpose                   |
 | ---------------- | -------- | ------------------------- |
-| `GOOGLE_API_KEY` | Yes      | Gemini API access for LLM |
+| `BUSINESS_AGENT_MODEL` | Yes      | LLM model selector (default: `ollama/gpt-oss:120b-cloud`) |
+| `OLLAMA_API_BASE` | Yes      | Ollama base URL (default: `http://127.0.0.1:11434`) |
+| `GOOGLE_API_KEY` | No       | Needed only when using Gemini models |
 
 ### Key Files for Debugging
 

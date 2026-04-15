@@ -48,11 +48,29 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
   };
 
   const grandTotal = getTotal("total");
+  const orderPermalink = checkout.order?.permalink_url;
+  const legacyExampleDomain = "example.com";
+  const orderFallbackPath = checkout.order?.id
+    ? `/api/orders/${checkout.order.id}`
+    : undefined;
+  const continueFallbackPath = `/api/checkouts/${checkout.id}`;
+  const continueUrl =
+    checkout.continue_url && checkout.continue_url.includes(legacyExampleDomain)
+      ? continueFallbackPath
+      : checkout.continue_url;
+  const orderUrl =
+    orderPermalink && orderPermalink.includes(legacyExampleDomain)
+      ? orderFallbackPath
+      : orderPermalink && orderPermalink.startsWith("/orders/")
+        ? (window.location.port === "3000"
+            ? `/api${orderPermalink}`
+            : orderPermalink)
+        : orderPermalink;
 
   return (
-    <div className="flex w-full my-2 justify-start">
-      <div className="max-w-md bg-white rounded-lg shadow-lg p-4 border border-gray-200">
-        <h3 className="text-md font-bold text-gray-800 border-b pb-2 mb-3 flex items-center">
+    <div className="flex w-full my-3 justify-start">
+      <div className="w-full max-w-3xl rounded-xl border border-slate-200 bg-white p-4 shadow-lg">
+        <h3 className="mb-3 flex items-center border-b border-slate-200 pb-2 text-md font-bold text-slate-800">
           <svg
             role="img"
             aria-label="Checkout"
@@ -74,9 +92,15 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
             : "Checkout Summary"}
         </h3>
         {checkout.order?.id && (
-          <p className="border-b pt-3 pb-3 text-sm space-y-2">
+          <p className="space-y-2 border-b border-slate-200 pb-3 pt-3 text-sm">
             Order ID: {checkout.order.id}
           </p>
+        )}
+        {checkout.status === "completed" && (
+          <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+            Payment completed and order confirmed through UCP checkout flow.
+            Use the button below to view your order details page.
+          </div>
         )}
         <div className="pt-3 space-y-3">
           {itemsToShow.map((lineItem: CheckoutItem) => (
@@ -87,12 +111,12 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
                 className="w-16 h-16 object-cover rounded-md mr-4"
               />
               <div className="flex-grow">
-                <p className="font-semibold text-gray-700">
+                <p className="font-semibold text-slate-700">
                   {lineItem.item.title}
                 </p>
-                <p className="text-gray-500">Qty: {lineItem.quantity}</p>
+                <p className="text-slate-500">Qty: {lineItem.quantity}</p>
               </div>
-              <p className="text-gray-800 font-medium pl-2">
+              <p className="pl-2 font-medium text-slate-800">
                 {formatCurrency(
                   getItemTotal(lineItem).amount,
                   checkout.currency
@@ -106,7 +130,7 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
             <button
               type="button"
               onClick={() => setIsExpanded(!isExpanded)}
-              className="text-sm text-blue-600 hover:underline w-full text-center"
+              className="w-full text-center text-sm text-blue-600 hover:underline"
             >
               {isExpanded
                 ? "Show less"
@@ -114,7 +138,7 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
             </button>
           </div>
         )}
-        <div className="border-t mt-4 pt-3 text-sm space-y-2">
+        <div className="mt-4 space-y-2 border-t border-slate-200 pt-3 text-sm">
           {checkout.totals
             .filter((t) => t.type !== "total" && t.amount > 0)
             .map((total) => (
@@ -122,15 +146,15 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
                 key={total.type}
                 className="flex justify-between items-center"
               >
-                <span className="text-gray-600">{total.display_text}</span>
-                <span className="text-gray-800 font-medium">
+                <span className="text-slate-600">{total.display_text}</span>
+                <span className="font-medium text-slate-800">
                   {formatCurrency(total.amount, checkout.currency)}
                 </span>
               </div>
             ))}
         </div>
         {grandTotal && (
-          <div className="border-t mt-4 pt-3">
+          <div className="mt-4 border-t border-slate-200 pt-3">
             <div className="flex justify-between items-center font-bold text-md">
               <span>{grandTotal.display_text}</span>
               <span>
@@ -139,17 +163,17 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
             </div>
           </div>
         )}
-        <p className="text-xs text-gray-400 mt-3 text-center">
+        <p className="mt-3 text-center text-xs text-slate-400">
           Checkout ID: {checkout.id}
         </p>
         {checkout.status !== "completed" && (
-          <div className="border-t mt-4 pt-4 flex justify-around items-center">
-            {checkout.continue_url && (
+          <div className="mt-4 flex flex-wrap items-center justify-start gap-3 border-t border-slate-200 pt-4">
+            {continueUrl && (
               <a
-                href={checkout.continue_url}
+                href={continueUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded text-sm"
+                className="rounded bg-slate-600 px-4 py-2 text-sm font-bold text-white hover:bg-slate-700"
               >
                 Go to Checkout
               </a>
@@ -158,7 +182,7 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
               <button
                 type="button"
                 onClick={onCheckout}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded text-sm"
+                className="rounded bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
               >
                 Start Payment
               </button>
@@ -167,19 +191,21 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
               <button
                 type="button"
                 onClick={() => onCompletePayment?.(checkout)}
-                className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded text-sm"
+                className="rounded bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700"
               >
                 Complete Payment
               </button>
             )}
           </div>
         )}
-        {checkout.order?.permalink_url && (
+        {orderUrl && (
           <a
-            href={checkout.order.permalink_url}
+            href={orderUrl}
+            target="_blank"
+            rel="noopener noreferrer"
             className="block mt-4 bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded text-center"
           >
-            View Order
+            View Your Order
           </a>
         )}
       </div>

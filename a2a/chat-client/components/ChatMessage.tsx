@@ -39,18 +39,18 @@ interface ChatMessageProps {
 
 function TypingIndicator() {
   return (
-    <div className="w-full my-1 justify-start">
+    <div className="w-full my-2 justify-start">
       <div className="flex items-center gap-2 mb-1">
         <div className="flex-shrink-0">
           <img alt="logo" src={appConfig.logoUrl} className="w-8 h-8" />
         </div>
-        <span className="font-semibold text-gray-700">{appConfig.name}</span>
+        <span className="font-semibold text-slate-700">{appConfig.name}</span>
       </div>
-      <div className="ml-10 px-4 py-3 rounded-2xl shadow-sm bg-gray-200 text-gray-800 self-start inline-block">
+      <div className="agent-bubble ml-10 px-4 py-3 rounded-2xl self-start inline-block">
         <div className="flex items-center space-x-2 h-5">
-          <span className="h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-          <span className="h-2 w-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-          <span className="h-2 w-2 bg-gray-400 rounded-full animate-bounce"></span>
+          <span className="h-2 w-2 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+          <span className="h-2 w-2 bg-slate-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+          <span className="h-2 w-2 bg-slate-400 rounded-full animate-bounce"></span>
         </div>
       </div>
     </div>
@@ -75,19 +75,19 @@ function ChatMessageComponent({
   // User messages are handled separately
   if (isUser) {
     return (
-      <div className="flex w-full my-1 items-start gap-2 justify-end">
-        <div className="max-w-xs md:max-w-md lg:max-w-2xl px-4 py-2 rounded-2xl shadow-sm bg-blue-500 text-white self-end">
+      <div className="flex w-full my-2 items-start gap-2 justify-end">
+        <div className="user-bubble max-w-[78%] md:max-w-2xl px-4 py-2 rounded-2xl shadow-sm self-end">
           <div className="whitespace-pre-wrap break-words">{message.text}</div>
         </div>
         <div className="flex-shrink-0 pt-1">
-          <UserLogo className="w-8 h-8 text-gray-400" />
+          <UserLogo className="w-8 h-8 text-slate-400" />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="w-full my-1 justify-start">
+    <div className="w-full my-2 justify-start">
       <div className="flex items-center gap-2 mb-1">
         <div className="flex-shrink-0">
           <img
@@ -96,12 +96,12 @@ function ChatMessageComponent({
             className="w-8 h-8"
           />
         </div>
-        <span className="font-semibold text-gray-700">{appConfig.name}</span>
+        <span className="font-semibold text-slate-700">{appConfig.name}</span>
       </div>
       <div className="ml-10 flex-grow min-w-0">
         {message.text && (
-          <div className="max-w-xs md:max-w-md lg:max-w-2xl px-4 py-2 rounded-2xl shadow-sm bg-gray-200 text-gray-800 self-start inline-block">
-            <div className="break-words whitespace-pre-wrap">
+          <div className="agent-bubble max-w-[92%] md:max-w-3xl px-4 py-3 rounded-2xl self-start inline-block">
+            <div className="break-words whitespace-pre-wrap leading-relaxed">
               {message.text}
             </div>
           </div>
@@ -122,8 +122,8 @@ function ChatMessageComponent({
         )}
 
         {message.products && message.products.length > 0 && (
-          <div className="w-full my-1 overflow-x-auto">
-            <div className="flex space-x-4 p-2">
+          <div className="w-full my-3">
+            <div className="catalog-grid p-1">
               {message.products.map((product) => (
                 <ProductCard
                   key={product.productID}

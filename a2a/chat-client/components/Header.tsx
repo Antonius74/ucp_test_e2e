@@ -17,8 +17,8 @@ import { appConfig } from "@/config";
 
 function Header() {
   return (
-    <header className="bg-white shadow-sm p-4 border-b border-gray-200 flex-shrink-0">
-      <h1 className="text-xl font-bold text-gray-800 text-center flex justify-center items-center">
+    <header className="sticky top-0 z-10 flex-shrink-0 border-b border-slate-200 bg-white/90 p-4 shadow-sm backdrop-blur">
+      <h1 className="flex items-center justify-center text-center text-xl font-bold text-slate-800">
         <img
           src={appConfig.logoUrl}
           alt={appConfig.name}
