@@ -11,7 +11,7 @@
     },
     "offers": {
       "price": "4.99",
-      "priceCurrency": "USD",
+      "priceCurrency": "EUR",
       "priceSpecification": null,
       "@type": "Offer",
       "availability": "https://schema.org/InStock",
@@ -36,7 +36,7 @@
     },
     "offers": {
       "price": "4.49",
-      "priceCurrency": "USD",
+      "priceCurrency": "EUR",
       "priceSpecification": null,
       "@type": "Offer",
       "availability": "https://schema.org/InStock",
@@ -61,7 +61,7 @@
     },
     "offers": {
       "price": "3.79",
-      "priceCurrency": "USD",
+      "priceCurrency": "EUR",
       "priceSpecification": null,
       "@type": "Offer",
       "availability": "https://schema.org/InStock",
@@ -86,7 +86,7 @@
     },
     "offers": {
       "price": "4.79",
-      "priceCurrency": "USD",
+      "priceCurrency": "EUR",
       "priceSpecification": null,
       "@type": "Offer",
       "availability": "https://schema.org/InStock",
@@ -111,7 +111,7 @@
     },
     "offers": {
       "price": "5.99",
-      "priceCurrency": "USD",
+      "priceCurrency": "EUR",
       "priceSpecification": null,
       "@type": "Offer",
       "availability": "https://schema.org/InStock",
@@ -136,7 +136,7 @@
     },
     "offers": {
       "price": "2.99",
-      "priceCurrency": "USD",
+      "priceCurrency": "EUR",
       "priceSpecification": null,
       "@type": "Offer",
       "availability": "https://schema.org/InStock",
@@ -161,7 +161,7 @@
     },
     "offers": {
       "price": "12.99",
-      "priceCurrency": "USD",
+      "priceCurrency": "EUR",
       "priceSpecification": null,
       "@type": "Offer",
       "availability": "https://schema.org/OutOfStock",

@@ -627,7 +627,7 @@ class A2AOllamaE2ETest(unittest.TestCase):
         self.assertIsInstance(reservation, dict)
         self.assertEqual(reservation.get("condition_type"), "price_drop")
         self.assertEqual(reservation.get("status"), "active")
-        self.assertEqual(reservation.get("target_price"), "$3.99")
+        self.assertEqual(reservation.get("target_price"), "€3.99")
         self.assertEqual(reservation.get("buyer_email"), "alerts@example.com")
 
     def test_natural_language_reservation_uses_fast_path(self) -> None:

@@ -65,7 +65,7 @@ from .helpers import get_checkout_type
 from .models.product_types import ImageObject, Product, ProductResults
 
 
-DEFAULT_CURRENCY = "USD"
+DEFAULT_CURRENCY = "EUR"
 DEFAULT_ORDER_BASE_URL = "http://127.0.0.1:10999"
 
 
