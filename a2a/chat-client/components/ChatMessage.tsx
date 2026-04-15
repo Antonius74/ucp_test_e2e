@@ -24,6 +24,7 @@ import {
 import CheckoutComponent from "./Checkout";
 import PaymentConfirmationComponent from "./PaymentConfirmation";
 import PaymentMethodSelector from "./PaymentMethodSelector";
+import OrderHistory from "./OrderHistory";
 import ProductCard from "./ProductCard";
 import UserLogo from "./UserLogo";
 
@@ -133,6 +134,10 @@ function ChatMessageComponent({
               ))}
             </div>
           </div>
+        )}
+
+        {message.orders && message.orders.length > 0 && (
+          <OrderHistory orders={message.orders} />
         )}
 
         {message.checkout && (

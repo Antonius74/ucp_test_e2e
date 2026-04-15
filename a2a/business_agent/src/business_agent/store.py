@@ -601,6 +601,44 @@ class RetailStore:
         """Retrieve a completed order by ID."""
         return self._orders.get(order_id)
 
+    def list_orders(
+        self,
+        *,
+        buyer_email: str | None = None,
+        limit: int = 10,
+    ) -> list[Checkout]:
+        """Return completed orders in reverse-chronological insertion order."""
+        if limit <= 0:
+            return []
+
+        normalized_email = (
+            buyer_email.strip().lower() if isinstance(buyer_email, str) else None
+        )
+        orders = list(self._orders.values())
+        orders.reverse()
+
+        if normalized_email:
+            filtered_orders: list[Checkout] = []
+            for order in orders:
+                order_email = (
+                    order.buyer.email.strip().lower()
+                    if order.buyer is not None
+                    and isinstance(order.buyer.email, str)
+                    else None
+                )
+                if order_email == normalized_email:
+                    filtered_orders.append(order)
+            orders = filtered_orders
+
+        return orders[:limit]
+
+    def get_latest_order(self, buyer_email: str | None = None) -> Checkout | None:
+        """Return the most recent completed order, optionally filtered by buyer email."""
+        orders = self.list_orders(buyer_email=buyer_email, limit=1)
+        if not orders:
+            return None
+        return orders[0]
+
     def _get_fulfillment_options(self) -> list[FulfillmentOptionResponse]:
         """Return a list of available fulfillment options.
 

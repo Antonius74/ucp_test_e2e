@@ -232,6 +232,20 @@ class ADKAgentExecutor(AgentExecutor):
             )
             return
 
+        fast_order_parts = self._try_fast_order_lookup(
+            context, query, trace_events
+        )
+        if fast_order_parts is not None:
+            fast_order_parts = self._attach_protocol_trace_part(
+                fast_order_parts, trace_events
+            )
+            await event_queue.enqueue_event(
+                new_agent_parts_message(
+                    fast_order_parts, context.context_id, None
+                )
+            )
+            return
+
         fast_search_parts = self._try_fast_catalog_search(
             context, query, trace_events
         )
@@ -568,6 +582,92 @@ class ADKAgentExecutor(AgentExecutor):
             return payment_instrument.model_dump(mode="json")
         return None
 
+    def _is_order_lookup_query(self, query: str) -> bool:
+        """Return True when the query is asking for existing orders."""
+        cleaned = query.strip().lower()
+        if not cleaned or cleaned.startswith("execute the tool action"):
+            return False
+
+        order_words = {"order", "orders", "ordine", "ordini"}
+        if not any(word in cleaned for word in order_words):
+            return False
+        if cleaned in {"order", "orders", "my order", "my orders"}:
+            return True
+
+        intent_hints = {
+            "my",
+            "show",
+            "view",
+            "history",
+            "status",
+            "track",
+            "where",
+            "last",
+            "latest",
+            "recent",
+            "past",
+            "all",
+            "list",
+        }
+        return any(hint in cleaned for hint in intent_hints)
+
+    def _try_fast_order_lookup(
+        self,
+        context: RequestContext,
+        query: str,
+        trace_events: list[dict[str, Any]],
+    ) -> list[Part] | None:
+        """Fast path for order retrieval and order status messages."""
+        if not self._is_order_lookup_query(query):
+            return None
+
+        cleaned = query.strip().lower()
+        order_id_match = re.search(r"\b(ord-[a-z0-9_-]+)\b", query, re.IGNORECASE)
+
+        if order_id_match:
+            action_payload: dict[str, Any] = {
+                "action": "get_order",
+                "order_id": order_id_match.group(1).upper(),
+            }
+        elif "all orders" in cleaned or "order history" in cleaned or "my orders" in cleaned:
+            action_payload = {"action": "list_orders", "limit": 10}
+        else:
+            action_payload = {"action": "get_latest_order"}
+
+        shop_request = self._build_shop_agent_request(
+            context=context,
+            parts=[{"type": "data", "data": action_payload}],
+        )
+        self._append_trace(
+            trace_events,
+            "a2a.fast_path.orders.request",
+            query=query,
+            action=action_payload,
+            jsonrpc=shop_request,
+        )
+        shop_response = shop_agent.handle_jsonrpc(shop_request)
+        self._append_trace(
+            trace_events,
+            "a2a.fast_path.orders.response",
+            jsonrpc=shop_response,
+        )
+
+        parts = self._subagent_response_to_parts(shop_response)
+        if not parts:
+            return None
+
+        orders = self._extract_data_from_parts(parts, "a2a.orders")
+        checkout = self._extract_data_from_parts(parts, "a2a.ucp.checkout")
+        self._append_trace(
+            trace_events,
+            "a2a.fast_path.orders.completed",
+            has_checkout=bool(checkout),
+            order_count=len(orders) if isinstance(orders, list) else None,
+            execution_mode="fast_path_orders",
+            adk_runner_used=False,
+        )
+        return parts
+
     def _try_fast_catalog_search(
         self,
         context: RequestContext,
@@ -726,6 +826,9 @@ class ADKAgentExecutor(AgentExecutor):
             "remove_from_checkout",
             "update_checkout",
             "get_checkout",
+            "get_latest_order",
+            "get_order",
+            "list_orders",
             "start_payment",
             "update_customer_details",
             "complete_checkout",

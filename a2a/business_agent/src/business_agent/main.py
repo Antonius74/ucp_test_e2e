@@ -190,6 +190,88 @@ async def run(host, port):
 """
         return HTMLResponse(content)
 
+    async def orders_page(request):
+        limit_param = request.query_params.get("limit", "20")
+        try:
+            limit = max(1, min(int(limit_param), 100))
+        except ValueError:
+            limit = 20
+
+        buyer_email = request.query_params.get("buyer_email")
+        orders = store.list_orders(
+            buyer_email=buyer_email if buyer_email else None,
+            limit=limit,
+        )
+
+        order_links: list[str] = []
+        for order in orders:
+            order_id = order.order.id if order.order and order.order.id else None
+            if not order_id:
+                continue
+            total_amount = next(
+                (
+                    total.amount
+                    for total in order.totals
+                    if total.type == "total"
+                ),
+                0,
+            )
+            order_links.append(
+                (
+                    f'<li><a href="/orders/{html.escape(order_id)}">'
+                    f"{html.escape(order_id)}</a> - {order.status} - "
+                    f"{order.currency} {(total_amount / 100):.2f}</li>"
+                )
+            )
+
+        links_markup = (
+            "<ul>" + "".join(order_links) + "</ul>"
+            if order_links
+            else "<p>No completed orders found.</p>"
+        )
+        filters_text = (
+            f"Filtered by buyer_email={html.escape(buyer_email)}"
+            if buyer_email
+            else "Showing all in-memory completed orders"
+        )
+
+        content = f"""
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Orders</title>
+    <style>
+      body {{
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        padding: 24px;
+        background: #f5f8fc;
+        color: #0f172a;
+      }}
+      .card {{
+        max-width: 960px;
+        margin: 0 auto;
+        background: #fff;
+        border: 1px solid #dbe4ef;
+        border-radius: 14px;
+        padding: 20px;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Completed Orders</h1>
+      <p>{filters_text}</p>
+      {links_markup}
+    </div>
+  </body>
+</html>
+"""
+        return HTMLResponse(content)
+
     async def checkout_page(request):
         checkout_id = request.path_params.get("checkout_id")
         if not isinstance(checkout_id, str):
@@ -253,6 +335,7 @@ async def run(host, port):
     routes.extend(
         [
             Route("/checkouts/{checkout_id}", checkout_page),
+            Route("/orders", orders_page),
             Route("/orders/{order_id}", order_page),
             Route(
                 "/.well-known/ucp",

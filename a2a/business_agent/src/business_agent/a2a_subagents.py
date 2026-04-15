@@ -32,6 +32,7 @@ from .constants import UCP_CHECKOUT_KEY
 from .store import RetailStore
 
 MERCHANT_PAYMENT_RESULT_KEY = "a2a.merchant.payment_result"
+A2A_ORDERS_KEY = "a2a.orders"
 
 
 def _new_text_part(text: str) -> dict[str, Any]:
@@ -140,6 +141,7 @@ class ShopAgentA2A:
     def __init__(self, store: RetailStore):
         self.store = store
         self._checkout_ids_by_context: dict[str, str] = {}
+        self._order_ids_by_context: dict[str, list[str]] = {}
 
     def handle_jsonrpc(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_id, context_id, parts, metadata = _extract_message_and_parts(payload)
@@ -158,7 +160,7 @@ class ShopAgentA2A:
         data_payload = {
             key: value
             for key, value in result.items()
-            if key in {UCP_CHECKOUT_KEY, "a2a.product_results", "status"}
+            if key in {UCP_CHECKOUT_KEY, "a2a.product_results", A2A_ORDERS_KEY, "status"}
         }
         if data_payload:
             message_parts.append(_new_data_part(data_payload))
@@ -174,6 +176,23 @@ class ShopAgentA2A:
     def get_checkout_id_for_context(self, context_id: str) -> str | None:
         """Return the active checkout ID for an A2A context."""
         return self._checkout_ids_by_context.get(context_id)
+
+    def _get_orders_for_context(self, context_id: str) -> list[Any]:
+        order_ids = self._order_ids_by_context.get(context_id, [])
+        orders: list[Any] = []
+        for order_id in reversed(order_ids):
+            order = self.store.get_order(order_id)
+            if order is not None:
+                orders.append(order)
+        return orders
+
+    def _serialize_orders(self, orders: list[Any]) -> list[dict[str, Any]]:
+        return [order.model_dump(mode="json") for order in orders]
+
+    def _remember_order_for_context(self, context_id: str, order_id: str) -> None:
+        order_ids = self._order_ids_by_context.setdefault(context_id, [])
+        if order_id not in order_ids:
+            order_ids.append(order_id)
 
     def _resolve_ucp_metadata(self, metadata: dict[str, Any]) -> UcpMetadata | None:
         ucp_metadata = metadata.get("ucp_metadata")
@@ -216,6 +235,85 @@ class ShopAgentA2A:
             self._checkout_ids_by_context[context_id] = checkout.id
             return {
                 UCP_CHECKOUT_KEY: checkout.model_dump(mode="json"),
+                "status": "success",
+            }
+
+        if action == "get_order":
+            order_id = str(params.get("order_id", "")).strip()
+            if not order_id:
+                return {"message": "Order ID is required.", "status": "error"}
+
+            order = self.store.get_order(order_id)
+            if order is None:
+                return {
+                    "message": f"Order '{order_id}' not found.",
+                    "status": "not_found",
+                }
+
+            self._remember_order_for_context(context_id, order_id)
+            return {
+                "message": f"Here are the details for order {order_id}.",
+                UCP_CHECKOUT_KEY: order.model_dump(mode="json"),
+                "status": "success",
+            }
+
+        if action == "get_latest_order":
+            context_orders = self._get_orders_for_context(context_id)
+            order = context_orders[0] if context_orders else self.store.get_latest_order()
+            if order is None:
+                return {
+                    "message": (
+                        "I could not find completed orders yet. "
+                        "Complete a checkout first, then ask for your orders."
+                    ),
+                    "status": "not_found",
+                }
+
+            order_id = order.order.id if order.order and order.order.id else "latest"
+            if order.order and order.order.id:
+                self._remember_order_for_context(context_id, order.order.id)
+            return {
+                "message": f"Here is your latest completed order ({order_id}).",
+                UCP_CHECKOUT_KEY: order.model_dump(mode="json"),
+                "status": "success",
+            }
+
+        if action == "list_orders":
+            buyer_email = (
+                str(params.get("buyer_email")).strip()
+                if params.get("buyer_email") is not None
+                else None
+            )
+            try:
+                limit = int(params.get("limit", 10))
+            except (TypeError, ValueError):
+                limit = 10
+            limit = max(1, min(limit, 50))
+
+            context_orders = self._get_orders_for_context(context_id)
+            if context_orders:
+                orders = context_orders[:limit]
+            else:
+                orders = self.store.list_orders(buyer_email=buyer_email, limit=limit)
+
+            if not orders:
+                return {
+                    "message": "I could not find completed orders for this session yet.",
+                    "status": "not_found",
+                    A2A_ORDERS_KEY: [],
+                }
+
+            order_ids = [
+                order.order.id
+                for order in orders
+                if order.order is not None and order.order.id
+            ]
+            summary = ", ".join(order_ids[:3])
+            if len(order_ids) > 3:
+                summary = f"{summary}, +{len(order_ids) - 3} more"
+            return {
+                "message": f"I found {len(orders)} completed order(s): {summary}.",
+                A2A_ORDERS_KEY: self._serialize_orders(orders),
                 "status": "success",
             }
 
@@ -316,6 +414,8 @@ class ShopAgentA2A:
                 checkout.payment.instruments = [payment_instrument]
 
             completed_checkout = self.store.place_order(checkout_id)
+            if completed_checkout.order and completed_checkout.order.id:
+                self._remember_order_for_context(context_id, completed_checkout.order.id)
             self._checkout_ids_by_context.pop(context_id, None)
             return {
                 UCP_CHECKOUT_KEY: completed_checkout.model_dump(mode="json"),

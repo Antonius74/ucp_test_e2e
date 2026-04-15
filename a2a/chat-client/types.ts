@@ -60,6 +60,7 @@ export interface ChatMessage {
   sender: Sender;
   text: string;
   products?: Product[];
+  orders?: Checkout[];
   isLoading?: boolean;
   paymentMethods?: PaymentMethod[];
   isUserAction?: boolean;
@@ -121,6 +122,10 @@ export interface Checkout {
   continue_url?: string | null;
   status: string;
   totals: CheckoutTotal[];
+  order?: {
+    id?: string;
+    permalink_url?: string;
+  };
   order_id?: string;
   order_permalink_url?: string;
   payment?: Payment;

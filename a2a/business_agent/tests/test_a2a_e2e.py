@@ -245,6 +245,68 @@ class A2AOllamaE2ETest(unittest.TestCase):
         self.assertIn("result", body, body)
         return body["result"]
 
+    def _create_completed_order(self, email: str = "test@example.com") -> tuple[str, dict[str, Any]]:
+        add_result = self._send_message(
+            json.dumps(
+                {
+                    "action": "add_to_checkout",
+                    "product_id": "BISC-001",
+                    "quantity": 1,
+                }
+            )
+        )
+        context_id = add_result.get("contextId")
+        self.assertTrue(context_id)
+
+        details_result = self._send_message(
+            json.dumps(
+                {
+                    "action": "update_customer_details",
+                    "first_name": "Test",
+                    "last_name": "User",
+                    "street_address": "123 Main St",
+                    "address_locality": "San Francisco",
+                    "address_region": "CA",
+                    "postal_code": "94105",
+                    "address_country": "US",
+                    "email": email,
+                }
+            ),
+            context_id=context_id,
+        )
+        details_parts = _extract_parts(details_result)
+        checkout = _find_data(details_parts, "a2a.ucp.checkout")
+        self.assertIsInstance(checkout, dict)
+
+        if checkout.get("status") != "ready_for_complete":
+            payment_start = self._send_message(
+                json.dumps({"action": "start_payment"}),
+                context_id=context_id,
+            )
+            payment_parts = _extract_parts(payment_start)
+            checkout = _find_data(payment_parts, "a2a.ucp.checkout")
+            self.assertIsInstance(checkout, dict)
+
+        completion_result = self._send_message(
+            [
+                {"type": "data", "data": {"action": "complete_checkout"}},
+                {
+                    "type": "data",
+                    "data": {
+                        "a2a.ucp.checkout.payment_data": MOCK_PAYMENT_INSTRUMENT,
+                        "a2a.ucp.checkout.risk_signals": {"data": "e2e-test-risk"},
+                    },
+                },
+            ],
+            context_id=context_id,
+        )
+        completion_parts = _extract_parts(completion_result)
+        completed_checkout = _find_data(completion_parts, "a2a.ucp.checkout")
+        self.assertIsInstance(completed_checkout, dict)
+        self.assertEqual(completed_checkout.get("status"), "completed")
+
+        return context_id, completed_checkout
+
     def test_well_known_endpoints(self) -> None:
         with httpx.Client(timeout=20.0) as client:
             agent_card_res = client.get(f"{BACKEND_BASE_URL}/.well-known/agent-card.json")
@@ -518,6 +580,36 @@ class A2AOllamaE2ETest(unittest.TestCase):
 
         text_payload = _collect_text(completion_parts).lower()
         self.assertIn("declined", text_payload)
+
+    def test_show_my_orders_returns_order_history(self) -> None:
+        context_id, completed_checkout = self._create_completed_order(
+            email="orders-e2e@example.com"
+        )
+        completed_order_id = completed_checkout.get("order", {}).get("id")
+        self.assertIsInstance(completed_order_id, str)
+
+        orders_result = self._send_message("show me my orders", context_id=context_id)
+        orders_parts = _extract_parts(orders_result)
+        orders_payload = _find_data(orders_parts, "a2a.orders")
+        self.assertIsInstance(orders_payload, list)
+        self.assertGreaterEqual(len(orders_payload), 1)
+
+        order_ids = {
+            order.get("order", {}).get("id")
+            for order in orders_payload
+            if isinstance(order, dict)
+        }
+        self.assertIn(completed_order_id, order_ids)
+
+        protocol_trace = _find_data(orders_parts, "a2a.protocol_trace")
+        self.assertIsInstance(protocol_trace, list)
+        trace_stages = {
+            event.get("stage")
+            for event in protocol_trace
+            if isinstance(event, dict)
+        }
+        self.assertIn("a2a.fast_path.orders.request", trace_stages)
+        self.assertIn("a2a.fast_path.orders.response", trace_stages)
 
 
 if __name__ == "__main__":

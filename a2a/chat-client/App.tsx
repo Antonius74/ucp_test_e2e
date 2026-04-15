@@ -618,6 +618,11 @@ function App() {
             results?: Product[];
           };
           combinedBotMessage.products = productResults.results;
+        } else if (dataPayload?.["a2a.orders"]) {
+          const orders = dataPayload["a2a.orders"] as Checkout[];
+          if (Array.isArray(orders)) {
+            combinedBotMessage.orders = orders;
+          }
         } else if (dataPayload?.["a2a.ucp.checkout"]) {
           // Checkout
           combinedBotMessage.checkout = dataPayload["a2a.ucp.checkout"] as Checkout;
@@ -637,6 +642,7 @@ function App() {
       const hasContent =
         combinedBotMessage.text ||
         combinedBotMessage.products ||
+        combinedBotMessage.orders ||
         combinedBotMessage.checkout;
       if (hasContent) {
         newMessages.push(combinedBotMessage);

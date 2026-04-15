@@ -19,6 +19,7 @@ ADK_PAYMENT_STATE = "__payment_data__"
 ADK_UCP_METADATA_STATE = "__ucp_metadata__"
 ADK_EXTENSIONS_STATE_KEY = "__session_extensions__"
 ADK_LATEST_TOOL_RESULT = "temp:LATEST_TOOL_RESULT"
+ADK_LAST_ORDER_ID = "user:last_order_id"
 
 A2A_UCP_EXTENSION_URL = "https://ucp.dev/specification/reference?v=2026-01-11"
 

@@ -31,6 +31,7 @@ from .a2a_subagents import MerchantAgentA2A, ShopAgentA2A
 from .a2a_extensions import UcpExtension
 from .constants import (
     ADK_EXTENSIONS_STATE_KEY,
+    ADK_LAST_ORDER_ID,
     ADK_LATEST_TOOL_RESULT,
     ADK_PAYMENT_STATE,
     ADK_UCP_METADATA_STATE,
@@ -218,6 +219,55 @@ def get_checkout(tool_context: ToolContext) -> dict:
     }
 
 
+def get_latest_order(tool_context: ToolContext) -> dict:
+    """Return the latest completed order for the active user session."""
+    order_id = tool_context.state.get(ADK_LAST_ORDER_ID)
+
+    order = None
+    if isinstance(order_id, str) and order_id.strip():
+        order = store.get_order(order_id.strip())
+
+    if order is None:
+        order = store.get_latest_order()
+
+    if order is None:
+        return {
+            "message": (
+                "I could not find any completed orders yet. "
+                "Complete a checkout first and then ask for your orders."
+            ),
+            "status": "not_found",
+        }
+
+    if order.order and order.order.id:
+        tool_context.state[ADK_LAST_ORDER_ID] = order.order.id
+
+    return {
+        UCP_CHECKOUT_KEY: order.model_dump(mode="json"),
+        "status": "success",
+    }
+
+
+def get_order(tool_context: ToolContext, order_id: str) -> dict:
+    """Return a completed order by order ID."""
+    order_id = order_id.strip()
+    if not order_id:
+        return _create_error_response("Order ID is required.")
+
+    order = store.get_order(order_id)
+    if order is None:
+        return {
+            "message": f"Order '{order_id}' was not found.",
+            "status": "not_found",
+        }
+
+    tool_context.state[ADK_LAST_ORDER_ID] = order_id
+    return {
+        UCP_CHECKOUT_KEY: order.model_dump(mode="json"),
+        "status": "success",
+    }
+
+
 def update_customer_details(
     tool_context: ToolContext,
     first_name: str,
@@ -324,6 +374,8 @@ async def complete_checkout(tool_context: ToolContext) -> dict:
             response = store.place_order(checkout_id)
             # clear completed checkout from state
             tool_context.state[ADK_USER_CHECKOUT_ID] = None
+            if response.order and response.order.id:
+                tool_context.state[ADK_LAST_ORDER_ID] = response.order.id
             return {
                 UCP_CHECKOUT_KEY: response.model_dump(mode="json"),
                 "status": "success",
@@ -450,6 +502,8 @@ root_agent = Agent(
         " action back to the user. If the user asks to add or remove items,"
         " update the checkout accordingly. If they ask to replace items, call"
         " remove_from_checkout and add_to_checkout to apply the change."
+        " If the user asks for order status, their latest order, or asks to"
+        " view an order by ID, call get_latest_order or get_order."
         " When payment data is already present in session state and the user"
         " asks to complete checkout, call complete_checkout."
     ),
@@ -459,6 +513,8 @@ root_agent = Agent(
         remove_from_checkout,
         update_checkout,
         get_checkout,
+        get_latest_order,
+        get_order,
         start_payment,
         update_customer_details,
         complete_checkout,
