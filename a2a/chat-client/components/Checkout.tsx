@@ -16,18 +16,22 @@
 import type React from "react";
 import { useState } from "react";
 
-import type { Checkout, CheckoutItem } from "../types";
+import type { Checkout, CheckoutItem, WalletType } from "../types";
 
 interface CheckoutProps {
   checkout: Checkout;
   onCheckout?: () => void;
   onCompletePayment?: (checkout: Checkout) => void;
+  onOpenCardPayment?: (checkout: Checkout) => void;
+  onWalletPayment?: (checkout: Checkout, wallet: WalletType) => void;
 }
 
 const CheckoutComponent: React.FC<CheckoutProps> = ({
   checkout,
   onCheckout,
   onCompletePayment,
+  onOpenCardPayment,
+  onWalletPayment,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const itemsToShow = isExpanded
@@ -48,16 +52,12 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
   };
 
   const grandTotal = getTotal("total");
+  const isReadyForPayment = checkout.status === "ready_for_complete";
   const orderPermalink = checkout.order?.permalink_url;
   const legacyExampleDomain = "example.com";
   const orderFallbackPath = checkout.order?.id
     ? `/api/orders/${checkout.order.id}`
     : undefined;
-  const continueFallbackPath = `/api/checkouts/${checkout.id}`;
-  const continueUrl =
-    checkout.continue_url && checkout.continue_url.includes(legacyExampleDomain)
-      ? continueFallbackPath
-      : checkout.continue_url;
   const orderUrl =
     orderPermalink && orderPermalink.includes(legacyExampleDomain)
       ? orderFallbackPath
@@ -168,17 +168,7 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
         </p>
         {checkout.status !== "completed" && (
           <div className="mt-4 flex flex-wrap items-center justify-start gap-3 border-t border-slate-200 pt-4">
-            {continueUrl && (
-              <a
-                href={continueUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded bg-slate-600 px-4 py-2 text-sm font-bold text-white hover:bg-slate-700"
-              >
-                Go to Checkout
-              </a>
-            )}
-            {onCheckout && (
+            {!isReadyForPayment && onCheckout && (
               <button
                 type="button"
                 onClick={onCheckout}
@@ -187,14 +177,36 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
                 Start Payment
               </button>
             )}
-            {onCompletePayment && (
-              <button
-                type="button"
-                onClick={() => onCompletePayment?.(checkout)}
-                className="rounded bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700"
-              >
-                Complete Payment
-              </button>
+            {isReadyForPayment && (
+              <>
+                {onOpenCardPayment && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenCardPayment?.(checkout)}
+                    className="h-10 min-w-[150px] rounded-md bg-blue-700 px-4 text-sm font-semibold text-white transition hover:bg-blue-800"
+                  >
+                    Paga con Carta
+                  </button>
+                )}
+                {onWalletPayment && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onWalletPayment(checkout, "apple_pay")}
+                      className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                    >
+                      Paga con Apple
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onWalletPayment(checkout, "google_pay")}
+                      className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                    >
+                      Paga con Google
+                    </button>
+                  </>
+                )}
+              </>
             )}
           </div>
         )}

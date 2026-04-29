@@ -1,0 +1,7 @@
+<svg width="178" height="44" viewBox="0 0 178 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="178" height="44" rx="10" fill="#FFFFFF"/>
+  <path d="M7.5 35L28.3 22L7.5 9H20L33.8 18L47.7 9H60.2L39.4 22L60.2 35H47.7L33.8 26L20 35H7.5Z" fill="#2C3DBE"/>
+  <path d="M63.5 35V9H91.5C97.8 9 102 12.8 102 18.2C102 23.4 97.8 27.2 91.5 27.2H76.1V35H63.5ZM76.1 20.9H89.4C91.2 20.9 92.3 19.9 92.3 18.2C92.3 16.4 91.2 15.4 89.4 15.4H76.1V20.9Z" fill="#2C3DBE"/>
+  <text x="107" y="14.5" fill="#2C3DBE" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700">nexi</text>
+  <text x="106.5" y="33.2" fill="#1D4ED8" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="800">XPAY</text>
+</svg>

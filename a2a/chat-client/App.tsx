@@ -23,6 +23,7 @@ import { CredentialProviderProxy } from "./mocks/credentialProviderProxy";
 
 import {
   type ChatMessage,
+  type NexiCardPaymentRequest,
   type PaymentInstrument,
   type PurchaseReservation,
   type ProtocolExchangeEvent,
@@ -30,6 +31,7 @@ import {
   Sender,
   type Checkout,
   type PaymentHandler,
+  type WalletType,
 } from "./types";
 
 type RequestPart =
@@ -230,13 +232,17 @@ const initialMessage: ChatMessage = createChatMessage(
  * Only for demo purposes, not intended for production use.
  */
 function App() {
-  const [user_email, _setUserEmail] = useState<string | null>(
+  const [user_email, setUserEmail] = useState<string | null>(
     "foo@example.com"
   );
   const [messages, setMessages] = useState<ChatMessage[]>([initialMessage]);
   const [isLoading, setIsLoading] = useState(false);
   const [contextId, setContextId] = useState<string | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
+  const [pendingWallet, setPendingWallet] = useState<WalletType | null>(null);
+  const [cardSelectorCheckout, setCardSelectorCheckout] = useState<Checkout | null>(
+    null
+  );
   const [protocolEvents, setProtocolEvents] = useState<ProtocolExchangeEvent[]>(
     []
   );
@@ -340,7 +346,84 @@ function App() {
     });
   };
 
+  const openCardPaymentForm = (checkout: Checkout) => {
+    setPendingWallet(null);
+    setCardSelectorCheckout(null);
+    const cardPaymentMessage = createChatMessage(
+      Sender.MODEL,
+      "Complete your payment securely with Nexi XPay.",
+      { cardPaymentCheckout: checkout }
+    );
+    setMessages((prev) => [
+      ...prev.filter((msg) => !msg.cardPaymentCheckout && !msg.paymentMethods),
+      cardPaymentMessage,
+    ]);
+  };
+
+  const handleOpenCardPayment = async (checkout: Checkout) => {
+    setPendingWallet(null);
+    const resolvedEmail = (user_email || "buyer@example.com").trim();
+    setUserEmail(resolvedEmail);
+
+    try {
+      const registeredResponse =
+        await credentialProvider.current.getRegisteredPaymentMethods(
+          resolvedEmail
+        );
+      const registeredCards = registeredResponse.payment_method_aliases || [];
+
+      if (registeredCards.length === 0) {
+        openCardPaymentForm(checkout);
+        return;
+      }
+
+      setCardSelectorCheckout(checkout);
+      const selectorMessage = createChatMessage(
+        Sender.MODEL,
+        "Seleziona una carta registrata oppure aggiungine una nuova.",
+        {
+          paymentMethods: registeredCards,
+          paymentMethodsTitle: "Le tue carte registrate",
+          allowAddNewCard: true,
+        }
+      );
+      setMessages((prev) => [
+        ...prev.filter((msg) => !msg.cardPaymentCheckout && !msg.paymentMethods),
+        selectorMessage,
+      ]);
+    } catch (error) {
+      console.error("Failed to load registered cards:", error);
+      openCardPaymentForm(checkout);
+    }
+  };
+
+  const handleAddNewCard = () => {
+    if (cardSelectorCheckout) {
+      openCardPaymentForm(cardSelectorCheckout);
+      return;
+    }
+
+    const latestCheckout = messages
+      .slice()
+      .reverse()
+      .find((message) => message.checkout?.status === "ready_for_complete")
+      ?.checkout;
+
+    if (latestCheckout) {
+      openCardPaymentForm(latestCheckout);
+      return;
+    }
+
+    const errorMessage = createChatMessage(
+      Sender.MODEL,
+      "Non ho trovato un checkout pronto. Aggiungi prima un prodotto al carrello."
+    );
+    setMessages((prev) => [...prev, errorMessage]);
+  };
+
   const handlePaymentMethodSelection = async (checkout: Checkout) => {
+    setPendingWallet(null);
+    setCardSelectorCheckout(null);
     if (!checkout || !checkout.payment || !checkout.payment.handlers) {
       const errorMessage = createChatMessage(
         Sender.MODEL,
@@ -386,13 +469,22 @@ function App() {
   };
 
   const handlePaymentMethodSelected = async (selectedMethod: string) => {
+    const selectedMethodLabel =
+      messages
+        .slice()
+        .reverse()
+        .flatMap((msg) => msg.paymentMethods || [])
+        .find((method) => method.id === selectedMethod)?.display_label ||
+      selectedMethod;
+
     // Hide the payment selector by removing it from the messages
     setMessages((prev) => prev.filter((msg) => !msg.paymentMethods));
+    setCardSelectorCheckout(null);
 
     // Add a temporary user message
     const userActionMessage = createChatMessage(
       Sender.USER,
-      `User selected payment method: ${selectedMethod}`,
+      `User selected payment method: ${selectedMethodLabel}`,
       { isUserAction: true }
     );
     setMessages((prev) => [...prev, userActionMessage]);
@@ -402,14 +494,61 @@ function App() {
         throw new Error("User email is not set.");
       }
 
-      const paymentInstrument =
-        await credentialProvider.current.getPaymentToken(
+      const activeWallet = pendingWallet;
+      let paymentInstrument: PaymentInstrument | undefined;
+      if (activeWallet) {
+        const walletLabel =
+          activeWallet === "google_pay" ? "Google Pay" : "Apple Pay";
+        setMessages((prev) => [
+          ...prev,
+          createChatMessage(
+            Sender.MODEL,
+            `Opening ${walletLabel} wallet sheet and waiting for approval...`
+          ),
+        ]);
+        const walletResult =
+          await credentialProvider.current.requestWalletAuthorization(
+            activeWallet
+          );
+        if (!walletResult.approved) {
+          setPendingWallet(null);
+          setMessages((prev) => [
+            ...prev,
+            createChatMessage(
+              Sender.MODEL,
+              `${walletLabel} authorization was cancelled. Please try again.`
+            ),
+          ]);
+          return;
+        }
+        paymentInstrument = await credentialProvider.current.tokenizeWalletPayment(
+          user_email,
+          activeWallet,
+          selectedMethod
+        );
+        setMessages((prev) => [
+          ...prev,
+          createChatMessage(
+            Sender.MODEL,
+            `${walletLabel} authorized. Completing payment now...`
+          ),
+        ]);
+        setPendingWallet(null);
+      } else {
+        paymentInstrument = await credentialProvider.current.getPaymentToken(
           user_email,
           selectedMethod
         );
+        setPendingWallet(null);
+      }
 
       if (!paymentInstrument || !paymentInstrument.credential) {
         throw new Error("Failed to retrieve payment credential");
+      }
+
+      if (activeWallet) {
+        await handleConfirmPayment(paymentInstrument);
+        return;
       }
 
       const paymentInstrumentMessage = createChatMessage(Sender.MODEL, "", {
@@ -417,12 +556,57 @@ function App() {
       });
       setMessages((prev) => [...prev, paymentInstrumentMessage]);
     } catch (error) {
+      setPendingWallet(null);
       console.error("Failed to process payment mandate:", error);
       const errorMessage = createChatMessage(
         Sender.MODEL,
         "Sorry, I couldn't process the payment. Please try again."
       );
       setMessages((prev) => [...prev, errorMessage]);
+    }
+  };
+
+  const handleWalletPayment = async (
+    _checkout: Checkout,
+    wallet: WalletType
+  ) => {
+    const walletLabel = wallet === "google_pay" ? "Google Pay" : "Apple Pay";
+    const resolvedEmail = (user_email || "buyer@example.com").trim();
+    setUserEmail(resolvedEmail);
+    setPendingWallet(wallet);
+    setCardSelectorCheckout(null);
+    setMessages((prev) => [
+      ...prev,
+      createChatMessage(Sender.USER, `User tapped ${walletLabel}.`, {
+        isUserAction: true,
+      }),
+    ]);
+
+    try {
+      const walletMethodsResponse =
+        await credentialProvider.current.getWalletPaymentMethods(wallet);
+      const paymentSelectorMessage = createChatMessage(
+        Sender.MODEL,
+        `Choose a ${walletLabel} card to continue.`,
+        {
+          paymentMethods: walletMethodsResponse.payment_method_aliases,
+          paymentMethodsTitle: `${walletLabel} Wallet`,
+        }
+      );
+      setMessages((prev) => [
+        ...prev.filter((msg) => !msg.paymentMethods),
+        paymentSelectorMessage,
+      ]);
+    } catch (error) {
+      setPendingWallet(null);
+      console.error(`Failed to process ${walletLabel}:`, error);
+      setMessages((prev) => [
+        ...prev,
+        createChatMessage(
+          Sender.MODEL,
+          `Sorry, ${walletLabel} payment failed. Please try again.`
+        ),
+      ]);
     }
   };
 
@@ -469,6 +653,36 @@ function App() {
       // In this case, we remove the loading indicator that handleSendMessage would have added
       setMessages((prev) => [...prev.slice(0, -1), errorMessage]); // This assumes handleSendMessage added a loader
       setIsLoading(false); // Ensure loading is stopped on authorization error
+    }
+  };
+
+  const handleSubmitCardPayment = async (
+    request: NexiCardPaymentRequest
+  ) => {
+    try {
+      setPendingWallet(null);
+      setCardSelectorCheckout(null);
+      setUserEmail(request.email);
+      const paymentInstrument =
+        await credentialProvider.current.tokenizeNexiCardPayment(
+          request.email,
+          {
+            cardNumber: request.cardNumber,
+            expiryMonth: request.expiryMonth,
+            expiryYear: request.expiryYear,
+            saveCardForFuture: request.saveCardForFuture,
+          }
+        );
+
+      setMessages((prev) => prev.filter((msg) => !msg.cardPaymentCheckout));
+      await handleConfirmPayment(paymentInstrument);
+    } catch (error) {
+      console.error("Failed to tokenize Nexi card:", error);
+      const errorMessage = createChatMessage(
+        Sender.MODEL,
+        "Sorry, the card payment could not be processed. Please try again."
+      );
+      setMessages((prev) => [...prev, errorMessage]);
     }
   };
 
@@ -753,11 +967,24 @@ function App() {
                   onAddToCart={handleAddToCheckout}
                   onReservePriceDrop={handleReserveOnPriceDrop}
                   onReserveRestock={handleReserveOnRestock}
+                  defaultPaymentEmail={user_email}
                   onCheckout={
                     msg.checkout?.status !== "ready_for_complete"
                       ? handleStartPayment
                       : undefined
                   }
+                  onOpenCardPayment={
+                    msg.checkout?.status === "ready_for_complete"
+                      ? handleOpenCardPayment
+                      : undefined
+                  }
+                  onWalletPayment={
+                    msg.checkout?.status === "ready_for_complete"
+                      ? handleWalletPayment
+                      : undefined
+                  }
+                  onSubmitCardPayment={handleSubmitCardPayment}
+                  onAddNewCard={handleAddNewCard}
                   onSelectPaymentMethod={handlePaymentMethodSelected}
                   onConfirmPayment={handleConfirmPayment}
                   onCompletePayment={

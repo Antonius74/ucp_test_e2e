@@ -17,11 +17,14 @@ import { appConfig } from "@/config";
 import {
   type ChatMessage,
   type Checkout,
+  type NexiCardPaymentRequest,
   type PaymentInstrument,
   type Product,
+  type WalletType,
   Sender,
 } from "../types";
 import CheckoutComponent from "./Checkout";
+import NexiCardPaymentForm from "./NexiCardPaymentForm";
 import PaymentConfirmationComponent from "./PaymentConfirmation";
 import PaymentMethodSelector from "./PaymentMethodSelector";
 import OrderHistory from "./OrderHistory";
@@ -34,10 +37,17 @@ interface ChatMessageProps {
   onAddToCart?: (product: Product) => Promise<void> | void;
   onReservePriceDrop?: (product: Product) => Promise<void> | void;
   onReserveRestock?: (product: Product) => Promise<void> | void;
+  defaultPaymentEmail?: string | null;
+  onOpenCardPayment?: (checkout: Checkout) => Promise<void> | void;
+  onSubmitCardPayment?: (
+    request: NexiCardPaymentRequest
+  ) => Promise<void> | void;
+  onAddNewCard?: () => Promise<void> | void;
   onCheckout?: () => void;
   onSelectPaymentMethod?: (selectedMethod: string) => void;
   onConfirmPayment?: (paymentInstrument: PaymentInstrument) => void;
   onCompletePayment?: (checkout: Checkout) => void;
+  onWalletPayment?: (checkout: Checkout, wallet: WalletType) => void;
   isLastCheckout?: boolean;
 }
 
@@ -66,10 +76,15 @@ function ChatMessageComponent({
   onAddToCart,
   onReservePriceDrop,
   onReserveRestock,
+  defaultPaymentEmail,
+  onOpenCardPayment,
+  onSubmitCardPayment,
+  onAddNewCard,
   onCheckout,
   onSelectPaymentMethod,
   onConfirmPayment,
   onCompletePayment,
+  onWalletPayment,
   isLastCheckout,
 }: ChatMessageProps) {
   const isUser = message.sender === Sender.USER;
@@ -116,7 +131,9 @@ function ChatMessageComponent({
         {message.paymentMethods && onSelectPaymentMethod && (
           <PaymentMethodSelector
             paymentMethods={message.paymentMethods}
+            title={message.paymentMethodsTitle}
             onSelect={onSelectPaymentMethod}
+            onAddNewCard={message.allowAddNewCard ? onAddNewCard : undefined}
           />
         )}
 
@@ -124,6 +141,14 @@ function ChatMessageComponent({
           <PaymentConfirmationComponent
             paymentInstrument={message.paymentInstrument}
             onConfirm={() => onConfirmPayment(message.paymentInstrument)}
+          />
+        )}
+
+        {message.cardPaymentCheckout && onSubmitCardPayment && (
+          <NexiCardPaymentForm
+            checkout={message.cardPaymentCheckout}
+            defaultEmail={defaultPaymentEmail}
+            onSubmit={onSubmitCardPayment}
           />
         )}
 
@@ -156,6 +181,8 @@ function ChatMessageComponent({
             checkout={message.checkout}
             onCheckout={isLastCheckout ? onCheckout : undefined}
             onCompletePayment={isLastCheckout ? onCompletePayment : undefined}
+            onWalletPayment={isLastCheckout ? onWalletPayment : undefined}
+            onOpenCardPayment={isLastCheckout ? onOpenCardPayment : undefined}
           />
         )}
       </div>

@@ -47,7 +47,11 @@ export interface PaymentMethod {
   last_digits: string;
   expiry_month: number;
   expiry_year: number;
+  display_label?: string;
+  wallet_provider?: WalletType;
 }
+
+export type WalletType = "google_pay" | "apple_pay";
 
 export interface PaymentInstrument extends PaymentMethod {
   handler_id: string;
@@ -62,11 +66,25 @@ export interface ChatMessage {
   products?: Product[];
   orders?: Checkout[];
   purchaseReservations?: PurchaseReservation[];
+  cardPaymentCheckout?: Checkout;
   isLoading?: boolean;
   paymentMethods?: PaymentMethod[];
+  paymentMethodsTitle?: string;
+  allowAddNewCard?: boolean;
   isUserAction?: boolean;
   checkout?: Checkout;
   paymentInstrument?: PaymentInstrument;
+}
+
+export interface NexiCardPaymentRequest {
+  checkoutId: string;
+  cardholderName: string;
+  email: string;
+  cardNumber: string;
+  expiryMonth: number;
+  expiryYear: number;
+  cvc: string;
+  saveCardForFuture: boolean;
 }
 
 export type ProtocolDirection = "outbound" | "inbound";
