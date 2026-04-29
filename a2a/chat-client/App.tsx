@@ -302,28 +302,6 @@ function App() {
     handleSendMessage(actionPayload, { isUserAction: true });
   };
 
-  const handleReserveOnPriceDrop = (productToReserve: Product) => {
-    const currentPrice = Number.parseFloat(productToReserve.offers.price || "0");
-    const suggestedTarget =
-      currentPrice > 0 ? Number((currentPrice * 0.9).toFixed(2)) : undefined;
-
-    const actionPayload: Record<string, unknown> = {
-      action: "reserve_on_price_drop",
-      product_id: productToReserve.productID,
-    };
-    if (suggestedTarget) {
-      actionPayload.target_price = suggestedTarget;
-    }
-    if (user_email) {
-      actionPayload.buyer_email = user_email;
-    }
-
-    handleSendMessage(
-      [{ type: "data", data: actionPayload }],
-      { isUserAction: true }
-    );
-  };
-
   const handleReserveOnRestock = (productToReserve: Product) => {
     const actionPayload: Record<string, unknown> = {
       action: "reserve_on_restock",
@@ -965,7 +943,6 @@ function App() {
                   key={msg.id}
                   message={msg}
                   onAddToCart={handleAddToCheckout}
-                  onReservePriceDrop={handleReserveOnPriceDrop}
                   onReserveRestock={handleReserveOnRestock}
                   defaultPaymentEmail={user_email}
                   onCheckout={

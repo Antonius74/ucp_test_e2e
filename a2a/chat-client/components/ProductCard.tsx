@@ -19,19 +19,16 @@ import type { Product } from "../types";
 interface ProductCardProps {
   product: Product;
   onAddToCart: (product: Product) => void;
-  onReservePriceDrop?: (product: Product) => void;
   onReserveRestock?: (product: Product) => void;
 }
 
 const ProductCard: React.FC<ProductCardProps> = ({
   product,
   onAddToCart,
-  onReservePriceDrop,
   onReserveRestock,
 }) => {
   const isAvailable = product.offers.availability.includes("InStock");
   const handleAddToCartClick = () => onAddToCart?.(product);
-  const handleReservePriceDropClick = () => onReservePriceDrop?.(product);
   const handleReserveRestockClick = () => onReserveRestock?.(product);
 
   return (
@@ -68,15 +65,6 @@ const ProductCard: React.FC<ProductCardProps> = ({
         >
           Add to Checkout
         </button>
-        {onReservePriceDrop && (
-          <button
-            type="button"
-            onClick={handleReservePriceDropClick}
-            className="mt-2 block w-full rounded-md border border-blue-300 bg-blue-50 py-2 text-center text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100"
-          >
-            Reserve if cheaper
-          </button>
-        )}
         {!isAvailable && onReserveRestock && (
           <button
             type="button"

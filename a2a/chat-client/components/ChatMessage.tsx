@@ -35,7 +35,6 @@ import UserLogo from "./UserLogo";
 interface ChatMessageProps {
   message: ChatMessage;
   onAddToCart?: (product: Product) => Promise<void> | void;
-  onReservePriceDrop?: (product: Product) => Promise<void> | void;
   onReserveRestock?: (product: Product) => Promise<void> | void;
   defaultPaymentEmail?: string | null;
   onOpenCardPayment?: (checkout: Checkout) => Promise<void> | void;
@@ -74,7 +73,6 @@ function TypingIndicator() {
 function ChatMessageComponent({
   message,
   onAddToCart,
-  onReservePriceDrop,
   onReserveRestock,
   defaultPaymentEmail,
   onOpenCardPayment,
@@ -160,7 +158,6 @@ function ChatMessageComponent({
                   key={product.productID}
                   product={product}
                   onAddToCart={onAddToCart}
-                  onReservePriceDrop={onReservePriceDrop}
                   onReserveRestock={onReserveRestock}
                 />
               ))}
