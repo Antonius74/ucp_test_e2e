@@ -41,6 +41,17 @@ Optional environment variables:
 
 In production, use HTTPS and your real PSP gateway configuration.
 
+## Nexi XPay Build v3
+
+Card checkout now uses Nexi hosted fields through Build v3 (SDK + iframes).
+The frontend requests:
+
+- `POST /api/nexi/build-session`
+- `POST /api/nexi/finalize-payment`
+
+These endpoints are implemented in the backend and invoke Nexi APIs with server-side
+`X-Api-Key`, so the API key is not sent from browser requests.
+
 ## Protocol Dashboard
 
 The UI includes a built-in protocol dashboard that logs:

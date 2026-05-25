@@ -22,6 +22,7 @@ import logging
 import os
 
 from pathlib import Path
+import httpx
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -30,8 +31,10 @@ import click
 from dotenv import load_dotenv
 from google.adk.models.registry import LLMRegistry
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.responses import FileResponse
 from starlette.responses import HTMLResponse
+from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 import uvicorn
@@ -40,6 +43,10 @@ from .agent import get_configured_model_name
 from .agent import root_agent as business_agent
 from .agent import store
 from .agent_executor import ADKAgentExecutor
+from .nexi_xpay import create_build_session
+from .nexi_xpay import finalize_build_payment
+from .nexi_xpay import NexiConfigurationError
+from .nexi_xpay import NexiUpstreamError
 
 load_dotenv()
 
@@ -426,12 +433,118 @@ async def run(host, port):
 """
         return HTMLResponse(content)
 
+    async def nexi_build_session(request: Request):
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return JSONResponse(
+                {"error": "Invalid JSON payload."},
+                status_code=400,
+            )
+
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"error": "Payload must be an object."},
+                status_code=400,
+            )
+
+        checkout_id = str(payload.get("checkoutId") or "").strip()
+        amount_raw = payload.get("amount")
+        currency = str(payload.get("currency") or "EUR").strip().upper()
+        if not checkout_id:
+            return JSONResponse(
+                {"error": "checkoutId is required."},
+                status_code=400,
+            )
+        try:
+            amount_cents = int(amount_raw)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"error": "amount must be an integer in cents."},
+                status_code=400,
+            )
+        if amount_cents <= 0:
+            return JSONResponse(
+                {"error": "amount must be greater than zero."},
+                status_code=400,
+            )
+
+        try:
+            session_data = await create_build_session(
+                checkout_id=checkout_id,
+                amount_cents=amount_cents,
+                currency=currency,
+            )
+            return JSONResponse(session_data)
+        except NexiConfigurationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        except NexiUpstreamError as exc:
+            return JSONResponse(
+                {
+                    "error": "Nexi /orders/build request failed.",
+                    "details": exc.payload,
+                },
+                status_code=exc.status_code,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": f"Nexi connectivity error: {exc}"},
+                status_code=502,
+            )
+
+    async def nexi_finalize_payment(request: Request):
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return JSONResponse(
+                {"error": "Invalid JSON payload."},
+                status_code=400,
+            )
+
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"error": "Payload must be an object."},
+                status_code=400,
+            )
+
+        session_id = str(payload.get("sessionId") or "").strip()
+        if not session_id:
+            return JSONResponse(
+                {"error": "sessionId is required."},
+                status_code=400,
+            )
+
+        try:
+            response_payload = await finalize_build_payment(session_id=session_id)
+            return JSONResponse(response_payload)
+        except NexiConfigurationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        except NexiUpstreamError as exc:
+            return JSONResponse(
+                {
+                    "error": "Nexi /build/finalize_payment request failed.",
+                    "details": exc.payload,
+                },
+                status_code=exc.status_code,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": f"Nexi connectivity error: {exc}"},
+                status_code=502,
+            )
+
     routes.extend(
         [
             Route("/checkouts/{checkout_id}", checkout_page),
             Route("/orders", orders_page),
             Route("/orders/{order_id}", order_page),
             Route("/reservations", reservations_page),
+            Route("/nexi/build-session", nexi_build_session, methods=["POST"]),
+            Route(
+                "/nexi/finalize-payment",
+                nexi_finalize_payment,
+                methods=["POST"],
+            ),
             Route(
                 "/.well-known/ucp",
                 lambda _: FileResponse(base_path / "data" / "ucp.json"),

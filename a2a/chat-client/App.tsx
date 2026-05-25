@@ -24,7 +24,6 @@ import { CredentialProviderProxy } from "./mocks/credentialProviderProxy";
 import {
   type ChatMessage,
   type GooglePayTokenizedCard,
-  type NexiCardPaymentRequest,
   type PaymentInstrument,
   type PurchaseReservation,
   type ProtocolExchangeEvent,
@@ -678,28 +677,14 @@ function App() {
     }
   };
 
-  const handleSubmitCardPayment = async (
-    request: NexiCardPaymentRequest
-  ) => {
+  const handleSubmitCardPayment = async (instrument: PaymentInstrument) => {
     try {
       setPendingWallet(null);
       setCardSelectorCheckout(null);
-      setUserEmail(request.email);
-      const paymentInstrument =
-        await credentialProvider.current.tokenizeNexiCardPayment(
-          request.email,
-          {
-            cardNumber: request.cardNumber,
-            expiryMonth: request.expiryMonth,
-            expiryYear: request.expiryYear,
-            saveCardForFuture: request.saveCardForFuture,
-          }
-        );
-
       setMessages((prev) => prev.filter((msg) => !msg.cardPaymentCheckout));
-      await handleConfirmPayment(paymentInstrument);
+      await handleConfirmPayment(instrument);
     } catch (error) {
-      console.error("Failed to tokenize Nexi card:", error);
+      console.error("Failed to process Nexi card payment:", error);
       const errorMessage = createChatMessage(
         Sender.MODEL,
         "Sorry, the card payment could not be processed. Please try again."

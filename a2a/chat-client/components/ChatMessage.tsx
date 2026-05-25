@@ -18,7 +18,6 @@ import {
   type ChatMessage,
   type Checkout,
   type GooglePayTokenizedCard,
-  type NexiCardPaymentRequest,
   type PaymentInstrument,
   type Product,
   type WalletType,
@@ -40,7 +39,7 @@ interface ChatMessageProps {
   defaultPaymentEmail?: string | null;
   onOpenCardPayment?: (checkout: Checkout) => Promise<void> | void;
   onSubmitCardPayment?: (
-    request: NexiCardPaymentRequest
+    instrument: PaymentInstrument
   ) => Promise<void> | void;
   onAddNewCard?: () => Promise<void> | void;
   onCheckout?: () => void;

@@ -14,69 +14,115 @@
  * limitations under the License.
  */
 import type React from "react";
-import { useMemo, useState } from "react";
-import type { Checkout, NexiCardPaymentRequest } from "../types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Checkout, PaymentInstrument } from "../types";
 
 interface NexiCardPaymentFormProps {
   checkout: Checkout;
   defaultEmail?: string | null;
-  onSubmit: (request: NexiCardPaymentRequest) => Promise<void> | void;
+  onSubmit: (instrument: PaymentInstrument) => Promise<void> | void;
 }
 
-function formatCardNumber(input: string): string {
-  const digits = input.replace(/\D/g, "").slice(0, 19);
-  return digits.replace(/(\d{4})(?=\d)/g, "$1 ").trim();
+interface NexiHostedField {
+  type?: string;
+  id?: string;
+  src?: string;
+  class?: string;
 }
 
-function formatExpiry(input: string): string {
-  const digits = input.replace(/\D/g, "").slice(0, 4);
-  if (digits.length < 3) {
-    return digits;
-  }
-  return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+interface NexiBuildSessionResponse {
+  sessionId: string;
+  securityToken?: string;
+  fields?: NexiHostedField[];
+  hfsdkUrl?: string;
+  nexiDomain?: string;
 }
 
-function isLuhnValid(cardNumber: string): boolean {
-  const digits = cardNumber.replace(/\D/g, "");
-  if (digits.length < 13 || digits.length > 19) {
-    return false;
-  }
-  let sum = 0;
-  let shouldDouble = false;
-  for (let i = digits.length - 1; i >= 0; i -= 1) {
-    let digit = Number.parseInt(digits.charAt(i), 10);
-    if (shouldDouble) {
-      digit *= 2;
-      if (digit > 9) {
-        digit -= 9;
-      }
-    }
-    sum += digit;
-    shouldDouble = !shouldDouble;
-  }
-  return sum % 10 === 0;
+interface NexiOperation {
+  operationId?: string;
+  paymentCircuit?: string;
+  paymentInstrumentInfo?: string;
 }
 
-function detectBrand(cardNumber: string): string {
-  const digits = cardNumber.replace(/\D/g, "");
-  if (/^4/.test(digits)) return "visa";
-  if (/^5[1-5]/.test(digits) || /^2(2[2-9]|[3-7])/.test(digits))
-    return "mastercard";
-  if (/^3[47]/.test(digits)) return "amex";
-  return "card";
+interface NexiFinalizeResponse {
+  state?: string;
+  url?: string;
+  operation?: NexiOperation;
 }
 
-function parseExpiry(expiry: string): { month: number; year: number } | null {
-  const match = expiry.match(/^(\d{2})\/(\d{2})$/);
-  if (!match) {
-    return null;
+interface NexiBuildFlowEvent {
+  sessionId?: string;
+  url?: string;
+  operation?: NexiOperation;
+  fieldSet?: {
+    fields?: NexiHostedField[];
+  };
+  errorCode?: string;
+}
+
+interface NexiBuildInstance {
+  confirmData: (loader?: () => void) => void;
+}
+
+interface NexiBuildOptions {
+  onBuildSuccess?: (evtData: NexiBuildFlowEvent) => void;
+  onBuildError?: (evtData: NexiBuildFlowEvent) => void;
+  onConfirmError?: (evtData: NexiBuildFlowEvent) => void;
+  onBuildFlowStateChange?: (
+    evtData: NexiBuildFlowEvent,
+    state: string
+  ) => void;
+}
+
+type NexiBuildConstructor = new (options: NexiBuildOptions) => NexiBuildInstance;
+
+declare global {
+  interface Window {
+    Build?: NexiBuildConstructor;
   }
-  const month = Number.parseInt(match[1], 10);
-  const year2 = Number.parseInt(match[2], 10);
-  if (Number.isNaN(month) || Number.isNaN(year2) || month < 1 || month > 12) {
-    return null;
+}
+
+const HFSDK_SCRIPT_ID = "nexi-hfsdk";
+
+function loadScript(scriptId: string, src: string): Promise<void> {
+  const existing = document.getElementById(scriptId) as HTMLScriptElement | null;
+  if (existing) {
+    return Promise.resolve();
   }
-  return { month, year: 2000 + year2 };
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.id = scriptId;
+    script.src = src;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+function mapNexiOperationToInstrument(operation: NexiOperation): PaymentInstrument {
+  const operationId = operation.operationId || crypto.randomUUID();
+  const paymentCircuitRaw = (operation.paymentCircuit || "CARD").toLowerCase();
+  const paymentCircuit = paymentCircuitRaw.replace(/[^a-z0-9]+/g, "_") || "card";
+  const maskedInfo = operation.paymentInstrumentInfo || "****0000";
+  const last4Match = maskedInfo.match(/(\d{4})$/);
+  const last_digits = last4Match ? last4Match[1] : "0000";
+
+  return {
+    id: `nexi_build_${operationId}`,
+    type: "card",
+    brand: paymentCircuit,
+    last_digits,
+    expiry_month: 12,
+    expiry_year: new Date().getFullYear() + 2,
+    handler_id: "example_payment_provider",
+    handler_name: "example.payment.provider",
+    credential: {
+      type: "nexi_build_operation",
+      token: `nexi_build_${operationId}`,
+    },
+  };
 }
 
 const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
@@ -84,14 +130,20 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
   defaultEmail,
   onSubmit,
 }) => {
-  const [cardholderName, setCardholderName] = useState("");
-  const [email, setEmail] = useState(defaultEmail || "");
-  const [cardNumber, setCardNumber] = useState("");
-  const [expiry, setExpiry] = useState("");
-  const [cvc, setCvc] = useState("");
-  const [saveCardForFuture, setSaveCardForFuture] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string>(
+    "Initializing Nexi secure payment..."
+  );
+  const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [paymentMethodFields, setPaymentMethodFields] = useState<NexiHostedField[]>([]);
+  const [cardFields, setCardFields] = useState<NexiHostedField[]>([]);
+  const [sessionId, setSessionId] = useState<string>("");
+  const [email, setEmail] = useState(defaultEmail || "");
+  const [saveCardForFuture, setSaveCardForFuture] = useState(false);
+
+  const buildRef = useRef<NexiBuildInstance | null>(null);
+  const hasMountedRef = useRef(false);
 
   const totalAmount = checkout.totals.find((t) => t.type === "total")?.amount ?? 0;
   const currency = checkout.currency || "EUR";
@@ -103,74 +155,197 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
       }).format(totalAmount / 100),
     [currency, totalAmount]
   );
-  const brand = detectBrand(cardNumber);
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (isSubmitting) return;
+  useEffect(() => {
+    if (hasMountedRef.current) {
+      return;
+    }
+    hasMountedRef.current = true;
 
-    const trimmedName = cardholderName.trim();
-    const trimmedEmail = email.trim();
-    const normalizedCard = cardNumber.replace(/\D/g, "");
-    const normalizedCvc = cvc.replace(/\D/g, "");
-    const parsedExpiry = parseExpiry(expiry);
+    async function initializeNexiBuild() {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const createSessionResponse = await fetch("/api/nexi/build-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            checkoutId: checkout.id,
+            amount: totalAmount,
+            currency,
+          }),
+        });
 
-    if (!trimmedName) {
-      setError("Please enter the cardholder name.");
-      return;
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-      setError("Please enter a valid email.");
-      return;
-    }
-    if (!isLuhnValid(normalizedCard)) {
-      setError("Card number is not valid.");
-      return;
-    }
-    if (!parsedExpiry) {
-      setError("Expiry must be in MM/YY format.");
-      return;
-    }
-    if (normalizedCvc.length < 3 || normalizedCvc.length > 4) {
-      setError("CVC must be 3 or 4 digits.");
-      return;
+        const sessionPayload =
+          (await createSessionResponse.json()) as NexiBuildSessionResponse & {
+            error?: string;
+            details?: unknown;
+          };
+
+        if (!createSessionResponse.ok) {
+          const details =
+            sessionPayload.details && typeof sessionPayload.details === "object"
+              ? ` ${JSON.stringify(sessionPayload.details)}`
+              : "";
+          throw new Error(
+            (sessionPayload.error || "Unable to initialize Nexi payment session.") +
+              details
+          );
+        }
+
+        if (!sessionPayload.sessionId) {
+          throw new Error("Nexi sessionId missing in /orders/build response.");
+        }
+
+        const hfsdkUrl =
+          sessionPayload.hfsdkUrl ||
+          `${sessionPayload.nexiDomain || "https://xpaysandbox.nexigroup.com"}/monetaweb/resources/hfsdk.js`;
+
+        await loadScript(HFSDK_SCRIPT_ID, hfsdkUrl);
+
+        if (!window.Build) {
+          throw new Error("Nexi Build SDK is not available after script load.");
+        }
+
+        setSessionId(sessionPayload.sessionId);
+        setPaymentMethodFields(
+          (sessionPayload.fields || []).filter(
+            (field) => field.class === "CARD" || field.id === "PAY_WITH_CARD"
+          )
+        );
+
+        buildRef.current = new window.Build({
+          onBuildSuccess: () => {
+            setError(null);
+          },
+          onBuildError: (evtData) => {
+            const code = evtData?.errorCode ? ` (${evtData.errorCode})` : "";
+            setError(`Nexi validation error${code}.`);
+            setIsSubmitting(false);
+          },
+          onConfirmError: (evtData) => {
+            const code = evtData?.errorCode ? ` (${evtData.errorCode})` : "";
+            setError(`Nexi confirm error${code}.`);
+            setIsSubmitting(false);
+          },
+          onBuildFlowStateChange: async (evtData, state) => {
+            if (state === "CARD_DATA_COLLECTION") {
+              setStatusMessage("Insert card details in secure Nexi fields.");
+              setCardFields(evtData?.fieldSet?.fields || []);
+              setIsSubmitting(false);
+              return;
+            }
+
+            if (state === "READY_FOR_PAYMENT") {
+              setStatusMessage("Card data confirmed. Finalizing payment...");
+              try {
+                const finalizeResponse = await fetch(
+                  "/api/nexi/finalize-payment",
+                  {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ sessionId: evtData?.sessionId || sessionPayload.sessionId }),
+                  }
+                );
+                const finalizePayload =
+                  (await finalizeResponse.json()) as NexiFinalizeResponse & {
+                    error?: string;
+                    details?: unknown;
+                  };
+
+                if (!finalizeResponse.ok) {
+                  throw new Error(
+                    finalizePayload.error ||
+                      "Nexi finalize_payment request failed."
+                  );
+                }
+
+                if (
+                  finalizePayload.state === "REDIRECTED_TO_EXTERNAL_DOMAIN" &&
+                  finalizePayload.url
+                ) {
+                  setStatusMessage(
+                    "3DS authentication required. Opening Nexi challenge..."
+                  );
+                  window.open(finalizePayload.url, "_blank", "noopener,noreferrer");
+                  setIsSubmitting(false);
+                  return;
+                }
+
+                if (
+                  finalizePayload.state === "PAYMENT_COMPLETE" &&
+                  finalizePayload.operation
+                ) {
+                  const instrument = mapNexiOperationToInstrument(
+                    finalizePayload.operation
+                  );
+                  await onSubmit(instrument);
+                  setIsSubmitting(false);
+                  return;
+                }
+
+                throw new Error("Unexpected Nexi finalize state.");
+              } catch (finalizeError) {
+                setError(
+                  finalizeError instanceof Error
+                    ? finalizeError.message
+                    : "Unable to finalize Nexi payment."
+                );
+                setIsSubmitting(false);
+              }
+              return;
+            }
+
+            if (state === "PAYMENT_COMPLETE" && evtData?.operation) {
+              const instrument = mapNexiOperationToInstrument(evtData.operation);
+              await onSubmit(instrument);
+              setIsSubmitting(false);
+            }
+          },
+        });
+
+        setStatusMessage("Select card and continue with Nexi secure fields.");
+      } catch (setupError) {
+        setError(
+          setupError instanceof Error
+            ? setupError.message
+            : "Unable to initialize Nexi payment."
+        );
+      } finally {
+        setIsLoading(false);
+      }
     }
 
-    const now = new Date();
-    const currentMonth = now.getMonth() + 1;
-    const currentYear = now.getFullYear();
-    if (
-      parsedExpiry.year < currentYear ||
-      (parsedExpiry.year === currentYear && parsedExpiry.month < currentMonth)
-    ) {
-      setError("Card is expired.");
-      return;
-    }
+    void initializeNexiBuild();
+  }, [checkout.id, currency, onSubmit, totalAmount]);
 
+  const handleConfirmPayment = () => {
     setError(null);
     setIsSubmitting(true);
+    setStatusMessage("Confirming card data with Nexi...");
     try {
-      await onSubmit({
-        checkoutId: checkout.id,
-        cardholderName: trimmedName,
-        email: trimmedEmail,
-        cardNumber: normalizedCard,
-        expiryMonth: parsedExpiry.month,
-        expiryYear: parsedExpiry.year,
-        cvc: normalizedCvc,
-        saveCardForFuture,
+      if (!buildRef.current) {
+        throw new Error("Nexi Build SDK not initialized.");
+      }
+      buildRef.current.confirmData(() => {
+        setIsSubmitting(true);
       });
-    } finally {
+    } catch (confirmError) {
+      setError(
+        confirmError instanceof Error
+          ? confirmError.message
+          : "Unable to confirm payment."
+      );
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="mt-3 w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-0 shadow-xl">
+    <div className="mt-3 w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-0 shadow-xl">
       <div className="flex items-center justify-between rounded-t-2xl border-b border-slate-200 bg-gradient-to-r from-slate-50 to-blue-50 px-5 py-4">
         <div>
           <p className="text-[11px] uppercase tracking-[0.12em] text-slate-500">
-            Secure Card Payment
+            Nexi XPay Build v3
           </p>
           <h3 className="text-lg font-bold text-slate-900">Pay {payLabel}</h3>
         </div>
@@ -181,86 +356,60 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
         />
       </div>
 
-      <form className="space-y-4 p-5" onSubmit={handleSubmit}>
-        <div className="space-y-1">
-          <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Cardholder name
-          </label>
-          <input
-            type="text"
-            value={cardholderName}
-            onChange={(e) => setCardholderName(e.target.value)}
-            placeholder="Mario Rossi"
-            className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-            autoComplete="cc-name"
-          />
-        </div>
+      <div className="space-y-4 p-5">
+        <p className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+          {statusMessage}
+        </p>
 
         <div className="space-y-1">
           <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Email
+            Email for receipt
           </label>
           <input
             type="email"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(event) => setEmail(event.target.value)}
             placeholder="name@example.com"
             className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
             autoComplete="email"
           />
         </div>
 
-        <div className="space-y-1">
-          <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Card number
-          </label>
-          <div className="relative">
-            <input
-              type="text"
-              inputMode="numeric"
-              value={cardNumber}
-              onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
-              placeholder="4242 4242 4242 4242"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pr-20 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-              autoComplete="cc-number"
-            />
-            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-              {brand}
-            </span>
+        {paymentMethodFields.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Select payment method
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {paymentMethodFields.map((field, index) => (
+                <iframe
+                  key={`${field.id || "method"}-${index}`}
+                  src={field.src}
+                  title={field.id || `Nexi Method ${index + 1}`}
+                  className="h-14 w-full rounded-md border border-slate-200"
+                />
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Expiry
-            </label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={expiry}
-              onChange={(e) => setExpiry(formatExpiry(e.target.value))}
-              placeholder="MM/YY"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-              autoComplete="cc-exp"
-            />
+        {cardFields.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Card details (secure Nexi iframes)
+            </p>
+            <div className="grid gap-2 md:grid-cols-2">
+              {cardFields.map((field, index) => (
+                <iframe
+                  key={`${field.id || "card"}-${index}`}
+                  src={field.src}
+                  title={field.id || `Nexi Card Field ${index + 1}`}
+                  className="h-12 w-full rounded-md border border-slate-200"
+                />
+              ))}
+            </div>
           </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              CVC
-            </label>
-            <input
-              type="password"
-              inputMode="numeric"
-              value={cvc}
-              onChange={(e) => setCvc(e.target.value.replace(/\D/g, "").slice(0, 4))}
-              placeholder="123"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
-              autoComplete="cc-csc"
-            />
-          </div>
-        </div>
+        )}
 
         {error && (
           <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
@@ -280,17 +429,22 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
 
         <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
           <p className="text-xs text-slate-500">
-            Encrypted checkout powered by Nexi XPay simulation.
+            Session ID: {sessionId || "pending"}
           </p>
           <button
-            type="submit"
-            disabled={isSubmitting}
+            type="button"
+            onClick={handleConfirmPayment}
+            disabled={isLoading || isSubmitting}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-wait disabled:bg-blue-400"
           >
-            {isSubmitting ? "Processing..." : `Pay ${payLabel}`}
+            {isLoading
+              ? "Loading Nexi..."
+              : isSubmitting
+                ? "Processing..."
+                : `Pay ${payLabel}`}
           </button>
         </div>
-      </form>
+      </div>
     </div>
   );
 };

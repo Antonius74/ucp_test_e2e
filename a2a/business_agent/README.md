@@ -54,3 +54,21 @@ Example agent implementing A2A Extension for UCP
 5. Verify endpoints:
    - Agent Card: http://localhost:10999/.well-known/agent-card.json
    - UCP Profile: http://localhost:10999/.well-known/ucp
+
+## Nexi XPay Build v3 (Card Payment)
+
+The chat client card checkout now uses Nexi XPay Build v3 via backend proxy endpoints:
+- `POST /nexi/build-session` -> calls Nexi `POST /orders/build`
+- `POST /nexi/finalize-payment` -> calls Nexi `POST /build/finalize_payment`
+
+Environment variables:
+
+- `NEXI_XPAY_ENV=TEST|PROD`
+- `NEXI_XPAY_API_KEY=<your-api-key>`
+- `NEXI_XPAY_MERCHANT_URL=https://your-domain.tld`
+- `NEXI_XPAY_RESULT_URL=https://your-domain.tld/nexi/result`
+- `NEXI_XPAY_CANCEL_URL=https://your-domain.tld/nexi/cancel`
+- `NEXI_XPAY_NOTIFICATION_URL=https://your-domain.tld/nexi/notify` (optional)
+- `NEXI_XPAY_LANGUAGE=ita`
+
+Note: Nexi Build requires a valid merchant URL domain (HTTP/HTTPS with host only, no path for `merchantUrl`).
