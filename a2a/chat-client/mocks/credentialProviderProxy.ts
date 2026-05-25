@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import type {
+  GooglePayTokenizedCard,
   PaymentInstrument,
   PaymentMethod,
   WalletType,
@@ -407,6 +408,37 @@ export class CredentialProviderProxy {
       credential: {
         type: "token",
         token: `tok_${wallet}_${randomId}`,
+      },
+    };
+  }
+
+  async tokenizeGooglePayPayment(
+    user_email: string,
+    payload: GooglePayTokenizedCard
+  ): Promise<PaymentInstrument> {
+    console.log(
+      `CredentialProviderProxy: Mapping Google Pay tokenized payload for ${user_email}`
+    );
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    const randomId = crypto.randomUUID();
+    const normalizedBrand = (payload.cardNetwork || "card").toLowerCase();
+    const cardLastDigits = (payload.cardDetails || "0000").slice(-4);
+
+    return {
+      id: `gpay_instr_${randomId.slice(0, 8)}`,
+      type: "card",
+      brand: normalizedBrand,
+      last_digits: cardLastDigits,
+      expiry_month: 12,
+      expiry_year: new Date().getFullYear() + 2,
+      display_label: `Google Pay •••• ${cardLastDigits}`,
+      wallet_provider: "google_pay",
+      handler_id: this.handler_id,
+      handler_name: this.handler_name,
+      credential: {
+        type: "token",
+        token: payload.token,
       },
     };
   }

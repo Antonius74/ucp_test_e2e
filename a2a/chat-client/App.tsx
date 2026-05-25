@@ -23,6 +23,7 @@ import { CredentialProviderProxy } from "./mocks/credentialProviderProxy";
 
 import {
   type ChatMessage,
+  type GooglePayTokenizedCard,
   type NexiCardPaymentRequest,
   type PaymentInstrument,
   type PurchaseReservation,
@@ -588,6 +589,49 @@ function App() {
     }
   };
 
+  const handleGooglePayAuthorized = async (
+    _checkout: Checkout,
+    payload: GooglePayTokenizedCard
+  ) => {
+    setPendingWallet(null);
+    setCardSelectorCheckout(null);
+    const resolvedEmail = (user_email || "buyer@example.com").trim();
+    setUserEmail(resolvedEmail);
+
+    setMessages((prev) => [
+      ...prev,
+      createChatMessage(Sender.USER, "User completed Google Pay authorization.", {
+        isUserAction: true,
+      }),
+      createChatMessage(Sender.MODEL, "Google Pay authorized. Completing payment now..."),
+    ]);
+
+    try {
+      const paymentInstrument =
+        await credentialProvider.current.tokenizeGooglePayPayment(
+          resolvedEmail,
+          payload
+        );
+      await handleConfirmPayment(paymentInstrument);
+    } catch (error) {
+      console.error("Failed to process Google Pay payment:", error);
+      setMessages((prev) => [
+        ...prev,
+        createChatMessage(
+          Sender.MODEL,
+          "Google Pay payment failed. Please try again or pay with card."
+        ),
+      ]);
+    }
+  };
+
+  const handleGooglePayError = (message: string) => {
+    setMessages((prev) => [
+      ...prev,
+      createChatMessage(Sender.MODEL, message),
+    ]);
+  };
+
   const handleConfirmPayment = async (paymentInstrument: PaymentInstrument) => {
     // Hide the payment confirmation component
     const userActionMessage = createChatMessage(
@@ -958,6 +1002,16 @@ function App() {
                   onWalletPayment={
                     msg.checkout?.status === "ready_for_complete"
                       ? handleWalletPayment
+                      : undefined
+                  }
+                  onGooglePayAuthorized={
+                    msg.checkout?.status === "ready_for_complete"
+                      ? handleGooglePayAuthorized
+                      : undefined
+                  }
+                  onGooglePayError={
+                    msg.checkout?.status === "ready_for_complete"
+                      ? handleGooglePayError
                       : undefined
                   }
                   onSubmitCardPayment={handleSubmitCardPayment}

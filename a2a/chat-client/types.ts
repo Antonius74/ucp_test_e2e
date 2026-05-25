@@ -59,6 +59,12 @@ export interface PaymentInstrument extends PaymentMethod {
   credential: Credential;
 }
 
+export interface GooglePayTokenizedCard {
+  token: string;
+  cardNetwork: string;
+  cardDetails: string;
+}
+
 export interface ChatMessage {
   id: string;
   sender: Sender;

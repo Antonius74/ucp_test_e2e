@@ -23,6 +23,24 @@
 2. Run the app:
    `npm run dev`
 
+## Google Pay Web API
+
+The checkout uses the real Google Pay Web SDK (`https://pay.google.com/gp/p/js/pay.js`).
+On click, it calls `PaymentsClient.loadPaymentData(...)` and forwards the returned
+tokenized payload into the existing UCP checkout `complete_checkout` action.
+
+Optional environment variables:
+
+- `VITE_GOOGLE_PAY_ENV=TEST|PRODUCTION` (default: `TEST`)
+- `VITE_GOOGLE_PAY_MERCHANT_ID` (required in production)
+- `VITE_GOOGLE_PAY_MERCHANT_NAME` (default: `UCP Demo Merchant`)
+- `VITE_GOOGLE_PAY_GATEWAY` (default: `example`)
+- `VITE_GOOGLE_PAY_GATEWAY_MERCHANT_ID` (default: `exampleGatewayMerchantId`)
+- `VITE_GOOGLE_PAY_ALLOWED_AUTH_METHODS` (csv, default: `PAN_ONLY,CRYPTOGRAM_3DS`)
+- `VITE_GOOGLE_PAY_ALLOWED_CARD_NETWORKS` (csv, default: `VISA,MASTERCARD`)
+
+In production, use HTTPS and your real PSP gateway configuration.
+
 ## Protocol Dashboard
 
 The UI includes a built-in protocol dashboard that logs:

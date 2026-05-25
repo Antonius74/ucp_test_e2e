@@ -17,6 +17,7 @@ import { appConfig } from "@/config";
 import {
   type ChatMessage,
   type Checkout,
+  type GooglePayTokenizedCard,
   type NexiCardPaymentRequest,
   type PaymentInstrument,
   type Product,
@@ -47,6 +48,11 @@ interface ChatMessageProps {
   onConfirmPayment?: (paymentInstrument: PaymentInstrument) => void;
   onCompletePayment?: (checkout: Checkout) => void;
   onWalletPayment?: (checkout: Checkout, wallet: WalletType) => void;
+  onGooglePayAuthorized?: (
+    checkout: Checkout,
+    payload: GooglePayTokenizedCard
+  ) => Promise<void> | void;
+  onGooglePayError?: (message: string) => void;
   isLastCheckout?: boolean;
 }
 
@@ -83,6 +89,8 @@ function ChatMessageComponent({
   onConfirmPayment,
   onCompletePayment,
   onWalletPayment,
+  onGooglePayAuthorized,
+  onGooglePayError,
   isLastCheckout,
 }: ChatMessageProps) {
   const isUser = message.sender === Sender.USER;
@@ -180,6 +188,10 @@ function ChatMessageComponent({
             onCompletePayment={isLastCheckout ? onCompletePayment : undefined}
             onWalletPayment={isLastCheckout ? onWalletPayment : undefined}
             onOpenCardPayment={isLastCheckout ? onOpenCardPayment : undefined}
+            onGooglePayAuthorized={
+              isLastCheckout ? onGooglePayAuthorized : undefined
+            }
+            onGooglePayError={isLastCheckout ? onGooglePayError : undefined}
           />
         )}
       </div>

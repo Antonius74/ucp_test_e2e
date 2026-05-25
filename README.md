@@ -16,48 +16,121 @@
 
 # Universal Commerce Protocol (UCP) Samples
 
-This directory contains sample implementations and client scripts for the
-Universal Commerce Protocol (UCP).
+This repository contains multiple reference implementations of the Universal
+Commerce Protocol (UCP), including a complete Agent-to-Agent (A2A) shopping
+demo with a React chat UI and an Ollama-backed model.
 
-## Sample Implementations
+## Repository Layout
 
-### Python
+| Area | Path | Purpose |
+| --- | --- | --- |
+| A2A demo (recommended) | `a2a/` | End-to-end shopping assistant with A2A JSON-RPC + UCP extension |
+| Python REST sample | `rest/python/server/` | FastAPI merchant server reference |
+| Python REST client | `rest/python/client/flower_shop/` | Happy-path buyer script |
+| Node.js REST sample | `rest/nodejs/` | Hono + Zod merchant server reference |
 
-A reference implementation of a UCP Merchant Server using Python and FastAPI.
+## Featured Demo: A2A + UCP Shopping Agent
 
-- **Server**: [Documentation](rest/python/server/README.md)
-  - Located in `rest/python/server/`.
-  - Demonstrates capability discovery, checkout session management, payment
-    processing, and order lifecycle.
-  - Includes simulation endpoints for testing.
+The `a2a/` demo is the most complete example in this repo. It shows:
+- UCP capability negotiation through A2A request headers.
+- Product discovery and checkout lifecycle with typed UCP payloads.
+- Multi-agent orchestration with Shop Agent + Merchant Agent over A2A-style
+  `message/send` interactions.
+- Simulated payment completion using tokenized credentials (card, Apple Pay,
+  Google Pay UX simulation).
+- Protocol observability from the frontend dashboard (JSON-RPC payloads, A2A
+  traces, token metadata).
 
-- **Client**:
-  [Happy Path Script](rest/python/client/flower_shop/simple_happy_path_client.py)
-  - Located in `rest/python/client/`.
-  - A script demonstrating a full "happy path" user journey (discovery ->
-    checkout -> payment).
+Architecture diagram:
 
-### Node.js
+![A2A UCP Architecture](a2a/assets/architecture_diagram.webp)
 
-A reference implementation of a UCP Merchant Server using Node.js, Hono, and
-Zod.
+### Core Components
 
-- **Server**: [Documentation](rest/nodejs/README.md)
-  - Located in `rest/nodejs/`.
-  - Demonstrates implementation of UCP specifications for shopping,
-    checkout, and order management using a Node.js stack.
+| Component | Location | Responsibility |
+| --- | --- | --- |
+| React Chat Client | `a2a/chat-client/` | Sends JSON-RPC `message/send`, renders products/checkout/payment flows |
+| A2A Server | `a2a/business_agent/src/business_agent/main.py` | Exposes `/api`, `/.well-known/agent-card.json`, `/.well-known/ucp` |
+| ADK Executor | `a2a/business_agent/src/business_agent/agent_executor.py` | Routes between direct actions, fast paths, and full ADK/LLM execution |
+| Shop Agent (A2A) | `a2a/business_agent/src/business_agent/a2a_subagents.py` | Handles catalog and checkout actions |
+| Merchant Agent (A2A) | `a2a/business_agent/src/business_agent/a2a_subagents.py` | Simulates payment authorization/gateway response |
+| Commerce Store | `a2a/business_agent/src/business_agent/store.py` | In-memory products, cart, checkout, orders |
 
-### A2A (Agent-to-Agent)
+### How Model Interaction Works
 
-An AI-powered retail agent implementing UCP via the A2A protocol.
+The backend does not always call the model. It uses a hybrid strategy:
 
-- **Cymbal Retail Agent**: [Documentation](a2a/README.md)
-  - Located in `a2a/business_agent/`.
-  - Demonstrates A2A protocol integration with UCP Extension.
-  - Includes AI-powered shopping assistant with Google ADK and Ollama.
-  - React-based chat client for user interaction.
+1. Deterministic path for structured actions.
+   `{"action":"add_to_checkout"}`, `{"action":"complete_checkout"}`, and similar
+   payloads are executed directly for speed and predictability.
+2. Fast-path for common catalog intents.
+   Queries like "show products" can bypass full reasoning and return typed
+   results quickly.
+3. Full ADK + Ollama path for open natural language requests.
+   Complex requests are executed through Google ADK tooling with Ollama model
+   backend (default: `ollama/gpt-oss:120b-cloud`).
 
-## Getting Started
+This design keeps the UX responsive while preserving model flexibility where it
+matters.
 
-Please refer to the specific README files linked above for detailed instructions
-on how to set up, run, and test each sample.
+### Protocol Exchange (A2A + UCP)
+
+Each chat request is a JSON-RPC 2.0 call to `/api`:
+- Method: `message/send`
+- Header `X-A2A-Extensions` declares the UCP extension URI.
+- Header `UCP-Agent` points to the buyer profile used for capability
+  negotiation.
+- Response parts return mixed content:
+  - `text` for conversational output.
+  - `data` for typed UCP payloads such as:
+    - `a2a.product_results`
+    - `a2a.ucp.checkout`
+    - `a2a.orders`
+    - `a2a.protocol_trace`
+
+### Payment in the Demo
+
+The payment flow is simulated end-to-end:
+- Card payment form (Nexi-style UX) with optional card saving.
+- Saved cards reused in later checkouts (last 4 digits shown).
+- Apple Pay / Google Pay simulated wallet authorization flow.
+- Merchant-side token authorization via A2A sub-agent and mock gateway payloads.
+
+## Quick Start (A2A Demo)
+
+### 1) Start backend
+
+```bash
+cd a2a/business_agent
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+cp env.example .env
+BUSINESS_AGENT_MODEL=ollama/gpt-oss:120b-cloud \
+OLLAMA_API_BASE=http://127.0.0.1:11434 \
+.venv/bin/python -m business_agent.main --host 127.0.0.1 --port 10999
+```
+
+### 2) Start frontend
+
+```bash
+cd a2a/chat-client
+npm install
+npm run dev -- --host 127.0.0.1 --port 3000
+```
+
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
+
+## Testing
+
+- A2A E2E test suite:
+  `cd a2a/business_agent && .venv/bin/python -m unittest -v tests/test_a2a_e2e.py`
+- Frontend production build check:
+  `cd a2a/chat-client && npm run build`
+
+## Additional Documentation
+
+- A2A demo deep dive: [a2a/README.md](a2a/README.md)
+- Backend quickstart: [a2a/business_agent/README.md](a2a/business_agent/README.md)
+- Architecture docs set: `a2a/docs/`
+- Python REST sample: [rest/python/server/README.md](rest/python/server/README.md)
+- Node.js REST sample: [rest/nodejs/README.md](rest/nodejs/README.md)
