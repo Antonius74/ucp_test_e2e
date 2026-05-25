@@ -48,6 +48,10 @@ class NexiConfig:
     notification_url: str | None
     language: str
     timeout_seconds: float
+    googlepay_endpoint: str
+    googlepay_merchant_id: str
+    googlepay_terminal_id: str
+    googlepay_gateway: str
 
 
 def _normalize_environment(value: str | None) -> str:
@@ -95,10 +99,23 @@ def _sanitize_order_id(checkout_id: str) -> str:
 
 def _build_headers(api_key: str) -> dict[str, str]:
     return {
-        "X-Api-Key": api_key,
+        "X-API-KEY": api_key,
         "Correlation-Id": str(uuid.uuid4()),
         "Content-Type": "application/json",
     }
+
+
+def _derive_holder_name(email: str) -> str:
+    local = (email.split("@")[0] if "@" in email else email).strip()
+    local = re.sub(r"[^A-Za-z0-9._-]", " ", local)
+    chunks = [chunk for chunk in re.split(r"[._\-\s]+", local) if chunk]
+    if not chunks:
+        return "UCP Buyer"
+    if len(chunks) == 1:
+        return chunks[0].capitalize()
+    first = chunks[0].capitalize()
+    last = chunks[1].capitalize()
+    return f"{first} {last}"
 
 
 def load_nexi_config() -> NexiConfig:
@@ -136,6 +153,17 @@ def load_nexi_config() -> NexiConfig:
         notification_url=notification_url,
         language=language,
         timeout_seconds=timeout_seconds,
+        googlepay_endpoint=(
+            os.getenv("NEXI_GOOGLEPAY_ENDPOINT")
+            or "https://stg-ta.nexigroup.com/phoenix-0.0/psp/api/v1/orders/googlepay"
+        ).strip(),
+        googlepay_merchant_id=(
+            os.getenv("NEXI_GOOGLEPAY_MERCHANT_ID") or "999999990"
+        ).strip(),
+        googlepay_terminal_id=(
+            os.getenv("NEXI_GOOGLEPAY_TERMINAL_ID") or "0000999"
+        ).strip(),
+        googlepay_gateway=(os.getenv("NEXI_GOOGLEPAY_GATEWAY") or "nexigtw").strip(),
     )
 
 
@@ -215,4 +243,82 @@ async def finalize_build_payment(*, session_id: str) -> dict[str, object]:
             {"error": "Unexpected Nexi response shape."},
         )
 
+    return data
+
+
+async def process_googlepay_order(
+    *,
+    checkout_id: str,
+    amount_cents: int,
+    currency: str,
+    buyer_email: str,
+    googlepay_payment_data: dict[str, object],
+    description: str | None = None,
+) -> dict[str, object]:
+    config = load_nexi_config()
+    endpoint = config.googlepay_endpoint
+    email = buyer_email.strip() or "buyer@example.com"
+    holder_name = _derive_holder_name(email)
+    safe_description = (description or "UCP Demo purchase").strip() or "UCP Demo purchase"
+
+    payload: dict[str, object] = {
+        "order": {
+            "orderId": _sanitize_order_id(checkout_id),
+            "amount": str(amount_cents),
+            "currency": currency.upper(),
+            "customerId": config.googlepay_terminal_id,
+            "description": safe_description,
+            "customField": f"terminal:{config.googlepay_terminal_id}",
+            "customerInfo": {
+                "cardHolderName": holder_name,
+                "cardHolderEmail": email,
+            },
+        },
+        "paymentSession": {
+            "actionType": "PAY",
+            "amount": str(amount_cents),
+            "recurrence": {
+                "action": "NO_RECURRING",
+                "contractId": None,
+                "contractType": None,
+                "contractExpiryDate": None,
+                "contractFrequency": None,
+            },
+            "captureType": "EXPLICIT",
+            "exemptions": "NO_PREFERENCE",
+            "language": config.language,
+            "resultUrl": config.result_url,
+            "cancelUrl": config.cancel_url,
+        },
+        "googlePayPaymentData": googlepay_payment_data,
+    }
+    if config.notification_url:
+        payment_session = payload["paymentSession"]
+        if isinstance(payment_session, dict):
+            payment_session["notificationUrl"] = config.notification_url
+
+    async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+        response = await client.post(
+            endpoint,
+            headers=_build_headers(config.api_key),
+            json=payload,
+        )
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"raw_response": response.text}
+
+    if response.status_code >= 400:
+        raise NexiUpstreamError(response.status_code, data)
+
+    if not isinstance(data, dict):
+        raise NexiUpstreamError(
+            502,
+            {"error": "Unexpected Nexi response shape."},
+        )
+
+    data["gateway"] = config.googlepay_gateway
+    data["merchantId"] = config.googlepay_merchant_id
+    data["terminalId"] = config.googlepay_terminal_id
     return data

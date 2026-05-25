@@ -47,6 +47,7 @@ from .nexi_xpay import create_build_session
 from .nexi_xpay import finalize_build_payment
 from .nexi_xpay import NexiConfigurationError
 from .nexi_xpay import NexiUpstreamError
+from .nexi_xpay import process_googlepay_order
 
 load_dotenv()
 
@@ -533,6 +534,82 @@ async def run(host, port):
                 status_code=502,
             )
 
+    async def nexi_googlepay_order(request: Request):
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return JSONResponse(
+                {"error": "Invalid JSON payload."},
+                status_code=400,
+            )
+
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"error": "Payload must be an object."},
+                status_code=400,
+            )
+
+        checkout_id = str(payload.get("checkoutId") or "").strip()
+        amount_raw = payload.get("amount")
+        currency = str(payload.get("currency") or "EUR").strip().upper()
+        buyer_email = str(payload.get("buyerEmail") or "").strip()
+        description = str(payload.get("description") or "").strip() or None
+        googlepay_payment_data = payload.get("googlePayPaymentData")
+
+        if not checkout_id:
+            return JSONResponse(
+                {"error": "checkoutId is required."},
+                status_code=400,
+            )
+        try:
+            amount_cents = int(amount_raw)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"error": "amount must be an integer in cents."},
+                status_code=400,
+            )
+        if amount_cents <= 0:
+            return JSONResponse(
+                {"error": "amount must be greater than zero."},
+                status_code=400,
+            )
+        if not buyer_email:
+            return JSONResponse(
+                {"error": "buyerEmail is required."},
+                status_code=400,
+            )
+        if not isinstance(googlepay_payment_data, dict):
+            return JSONResponse(
+                {"error": "googlePayPaymentData must be an object."},
+                status_code=400,
+            )
+
+        try:
+            response_payload = await process_googlepay_order(
+                checkout_id=checkout_id,
+                amount_cents=amount_cents,
+                currency=currency,
+                buyer_email=buyer_email,
+                googlepay_payment_data=googlepay_payment_data,
+                description=description,
+            )
+            return JSONResponse(response_payload)
+        except NexiConfigurationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        except NexiUpstreamError as exc:
+            return JSONResponse(
+                {
+                    "error": "Nexi /orders/googlepay request failed.",
+                    "details": exc.payload,
+                },
+                status_code=exc.status_code,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": f"Nexi connectivity error: {exc}"},
+                status_code=502,
+            )
+
     routes.extend(
         [
             Route("/checkouts/{checkout_id}", checkout_page),
@@ -543,6 +620,11 @@ async def run(host, port):
             Route(
                 "/nexi/finalize-payment",
                 nexi_finalize_payment,
+                methods=["POST"],
+            ),
+            Route(
+                "/nexi/googlepay-order",
+                nexi_googlepay_order,
                 methods=["POST"],
             ),
             Route(

@@ -60,6 +60,7 @@ Example agent implementing A2A Extension for UCP
 The chat client card checkout now uses Nexi XPay Build v3 via backend proxy endpoints:
 - `POST /nexi/build-session` -> calls Nexi `POST /orders/build`
 - `POST /nexi/finalize-payment` -> calls Nexi `POST /build/finalize_payment`
+- `POST /nexi/googlepay-order` -> calls Nexi `POST /orders/googlepay`
 
 Environment variables:
 
@@ -70,5 +71,9 @@ Environment variables:
 - `NEXI_XPAY_CANCEL_URL=https://your-domain.tld/nexi/cancel`
 - `NEXI_XPAY_NOTIFICATION_URL=https://your-domain.tld/nexi/notify` (optional)
 - `NEXI_XPAY_LANGUAGE=ita`
+- `NEXI_GOOGLEPAY_ENDPOINT=https://stg-ta.nexigroup.com/phoenix-0.0/psp/api/v1/orders/googlepay`
+- `NEXI_GOOGLEPAY_MERCHANT_ID=999999990`
+- `NEXI_GOOGLEPAY_TERMINAL_ID=0000999`
+- `NEXI_GOOGLEPAY_GATEWAY=nexigtw`
 
 Note: Nexi Build requires a valid merchant URL domain (HTTP/HTTPS with host only, no path for `merchantUrl`).

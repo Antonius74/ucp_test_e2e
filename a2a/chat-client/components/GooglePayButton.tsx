@@ -28,14 +28,21 @@ interface GooglePayButtonProps {
 }
 
 interface GooglePayPaymentData {
+  apiVersion?: number;
+  apiVersionMinor?: number;
+  email?: string;
   paymentMethodData?: {
+    description?: string;
     info?: {
       cardNetwork?: string;
       cardDetails?: string;
+      cardFundingSource?: string;
     };
     tokenizationData?: {
       token?: string;
+      type?: string;
     };
+    type?: string;
   };
 }
 
@@ -136,18 +143,19 @@ const GooglePayButton = ({
   }, [onError]);
 
   const config = useMemo(() => {
-    const envMap = import.meta.env as Record<string, string | undefined>;
+    const envMap = (import.meta as unknown as { env?: Record<string, string> })
+      .env || {};
     const environment: GooglePayEnvironment =
       envMap.VITE_GOOGLE_PAY_ENV === "PRODUCTION" ? "PRODUCTION" : "TEST";
 
     return {
       environment,
-      merchantId: envMap.VITE_GOOGLE_PAY_MERCHANT_ID || "BCR2DN4T8Q3Y6Q7R",
+      merchantId: envMap.VITE_GOOGLE_PAY_MERCHANT_ID || "999999990",
       merchantName: envMap.VITE_GOOGLE_PAY_MERCHANT_NAME || "UCP Demo Merchant",
-      gateway: envMap.VITE_GOOGLE_PAY_GATEWAY || "example",
+      gateway: envMap.VITE_GOOGLE_PAY_GATEWAY || "nexigtw",
       gatewayMerchantId:
-        envMap.VITE_GOOGLE_PAY_GATEWAY_MERCHANT_ID ||
-        "exampleGatewayMerchantId",
+        envMap.VITE_GOOGLE_PAY_GATEWAY_MERCHANT_ID || "999999990",
+      countryCode: envMap.VITE_GOOGLE_PAY_COUNTRY_CODE || "IT",
       allowedAuthMethods: parseCsvList(
         envMap.VITE_GOOGLE_PAY_ALLOWED_AUTH_METHODS,
         DEFAULT_ALLOWED_AUTH_METHODS
@@ -193,14 +201,17 @@ const GooglePayButton = ({
               merchantName: config.merchantName,
             }
           : {
+              merchantId: config.merchantId,
               merchantName: config.merchantName,
             },
       transactionInfo: {
         totalPriceStatus: "FINAL",
         totalPrice,
         currencyCode,
+        countryCode: config.countryCode,
         checkoutOption: "COMPLETE_IMMEDIATE_PURCHASE",
       },
+      emailRequired: true,
     }),
     [
       baseCardMethod,
@@ -208,6 +219,7 @@ const GooglePayButton = ({
       config.gatewayMerchantId,
       config.merchantId,
       config.merchantName,
+      config.countryCode,
       totalPrice,
       currencyCode,
     ]
@@ -273,21 +285,33 @@ const GooglePayButton = ({
               const paymentData = await activeClient.loadPaymentData(
                 paymentDataRequestRef.current
               );
-              const token =
-                paymentData.paymentMethodData?.tokenizationData?.token;
-              const cardNetwork =
-                paymentData.paymentMethodData?.info?.cardNetwork || "CARD";
-              const cardDetails =
-                paymentData.paymentMethodData?.info?.cardDetails || "0000";
+              const token = paymentData.paymentMethodData?.tokenizationData?.token;
+              const paymentMethodType = paymentData.paymentMethodData?.type;
 
-              if (!token) {
+              if (!token || !paymentMethodType) {
                 throw new Error("Google Pay token is missing.");
               }
 
               await onAuthorizedRef.current({
-                token,
-                cardNetwork,
-                cardDetails,
+                apiVersion: paymentData.apiVersion ?? 2,
+                apiVersionMinor: paymentData.apiVersionMinor ?? 0,
+                email: paymentData.email,
+                paymentMethodData: {
+                  description: paymentData.paymentMethodData?.description,
+                  info: {
+                    cardDetails: paymentData.paymentMethodData?.info?.cardDetails,
+                    cardFundingSource:
+                      paymentData.paymentMethodData?.info?.cardFundingSource,
+                    cardNetwork: paymentData.paymentMethodData?.info?.cardNetwork,
+                  },
+                  tokenizationData: {
+                    token,
+                    type:
+                      paymentData.paymentMethodData?.tokenizationData?.type ||
+                      "PAYMENT_GATEWAY",
+                  },
+                  type: paymentMethodType,
+                },
               });
             } catch (error) {
               console.error("Google Pay payment failed:", error);

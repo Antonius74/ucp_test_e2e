@@ -422,8 +422,16 @@ export class CredentialProviderProxy {
     await new Promise((resolve) => setTimeout(resolve, 350));
 
     const randomId = crypto.randomUUID();
-    const normalizedBrand = (payload.cardNetwork || "card").toLowerCase();
-    const cardLastDigits = (payload.cardDetails || "0000").slice(-4);
+    const normalizedBrand = (
+      payload.paymentMethodData?.info?.cardNetwork || "card"
+    ).toLowerCase();
+    const cardLastDigits = (
+      payload.paymentMethodData?.info?.cardDetails || "0000"
+    ).slice(-4);
+    const token = payload.paymentMethodData?.tokenizationData?.token;
+    if (!token) {
+      throw new Error("Google Pay token payload is missing tokenizationData.token");
+    }
 
     return {
       id: `gpay_instr_${randomId.slice(0, 8)}`,
@@ -438,7 +446,7 @@ export class CredentialProviderProxy {
       handler_name: this.handler_name,
       credential: {
         type: "token",
-        token: payload.token,
+        token,
       },
     };
   }

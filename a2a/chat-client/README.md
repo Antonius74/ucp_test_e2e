@@ -32,14 +32,17 @@ tokenized payload into the existing UCP checkout `complete_checkout` action.
 Optional environment variables:
 
 - `VITE_GOOGLE_PAY_ENV=TEST|PRODUCTION` (default: `TEST`)
-- `VITE_GOOGLE_PAY_MERCHANT_ID` (required in production)
+- `VITE_GOOGLE_PAY_MERCHANT_ID` (default: `999999990`)
 - `VITE_GOOGLE_PAY_MERCHANT_NAME` (default: `UCP Demo Merchant`)
-- `VITE_GOOGLE_PAY_GATEWAY` (default: `example`)
-- `VITE_GOOGLE_PAY_GATEWAY_MERCHANT_ID` (default: `exampleGatewayMerchantId`)
+- `VITE_GOOGLE_PAY_GATEWAY` (default: `nexigtw`)
+- `VITE_GOOGLE_PAY_GATEWAY_MERCHANT_ID` (default: `999999990`)
+- `VITE_GOOGLE_PAY_COUNTRY_CODE` (default: `IT`)
 - `VITE_GOOGLE_PAY_ALLOWED_AUTH_METHODS` (csv, default: `PAN_ONLY,CRYPTOGRAM_3DS`)
 - `VITE_GOOGLE_PAY_ALLOWED_CARD_NETWORKS` (csv, default: `VISA,MASTERCARD`)
 
-In production, use HTTPS and your real PSP gateway configuration.
+After Google Pay authorization, the client sends the full `googlePayPaymentData` payload
+to `POST /api/nexi/googlepay-order` (backend proxy), which calls Nexi
+`POST /orders/googlepay` with server-side API key.
 
 ## Nexi XPay Build v3
 

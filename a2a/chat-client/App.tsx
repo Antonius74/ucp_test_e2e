@@ -221,6 +221,46 @@ function deriveNameFromEmail(email: string): {
   };
 }
 
+function createGooglePayInstrumentFromNexiResponse(
+  responsePayload: Record<string, unknown>
+): PaymentInstrument {
+  const operation =
+    responsePayload.operation && typeof responsePayload.operation === "object"
+      ? (responsePayload.operation as Record<string, unknown>)
+      : {};
+  const operationId =
+    typeof operation.operationId === "string" && operation.operationId
+      ? operation.operationId
+      : crypto.randomUUID();
+  const circuitRaw =
+    typeof operation.paymentCircuit === "string" && operation.paymentCircuit
+      ? operation.paymentCircuit
+      : "card";
+  const maskedInstrument =
+    typeof operation.paymentInstrumentInfo === "string"
+      ? operation.paymentInstrumentInfo
+      : "";
+  const lastDigitsMatch = maskedInstrument.match(/(\d{4})$/);
+  const lastDigits = lastDigitsMatch ? lastDigitsMatch[1] : "0000";
+
+  return {
+    id: `nexi_gpay_${operationId}`,
+    type: "card",
+    brand: circuitRaw.toLowerCase(),
+    last_digits: lastDigits,
+    expiry_month: 12,
+    expiry_year: new Date().getFullYear() + 2,
+    wallet_provider: "google_pay",
+    display_label: `Google Pay •••• ${lastDigits}`,
+    handler_id: "example_payment_provider",
+    handler_name: "example.payment.provider",
+    credential: {
+      type: "nexi_googlepay_operation",
+      token: `nexi_googlepay_${operationId}`,
+    },
+  };
+}
+
 const initialMessage: ChatMessage = createChatMessage(
   Sender.MODEL,
   appConfig.defaultMessage,
@@ -589,7 +629,7 @@ function App() {
   };
 
   const handleGooglePayAuthorized = async (
-    _checkout: Checkout,
+    checkout: Checkout,
     payload: GooglePayTokenizedCard
   ) => {
     setPendingWallet(null);
@@ -606,11 +646,74 @@ function App() {
     ]);
 
     try {
-      const paymentInstrument =
-        await credentialProvider.current.tokenizeGooglePayPayment(
-          resolvedEmail,
-          payload
-        );
+      const totalAmount =
+        checkout.totals.find((total) => total.type === "total")?.amount || 0;
+      if (totalAmount <= 0) {
+        throw new Error("Checkout total amount is invalid for Google Pay.");
+      }
+
+      const googlePayPayload: GooglePayTokenizedCard = {
+        ...payload,
+        email: payload.email || resolvedEmail,
+      };
+
+      const response = await fetch("/api/nexi/googlepay-order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          checkoutId: checkout.id,
+          amount: totalAmount,
+          currency: checkout.currency || "EUR",
+          buyerEmail: resolvedEmail,
+          description: `Checkout ${checkout.id}`,
+          googlePayPaymentData: googlePayPayload,
+        }),
+      });
+      const responsePayload = (await response.json()) as
+        | Record<string, unknown>
+        | { error?: string; details?: unknown };
+
+      if (!response.ok) {
+        const message =
+          responsePayload &&
+          typeof responsePayload === "object" &&
+          "error" in responsePayload &&
+          typeof responsePayload.error === "string"
+            ? responsePayload.error
+            : "Nexi Google Pay request failed.";
+        throw new Error(message);
+      }
+
+      const nexiPayload = responsePayload as Record<string, unknown>;
+      const state =
+        typeof nexiPayload.state === "string" ? nexiPayload.state : "";
+      const redirectUrl =
+        typeof nexiPayload.url === "string" ? nexiPayload.url : "";
+      if (state === "REDIRECTED_TO_EXTERNAL_DOMAIN" && redirectUrl) {
+        window.open(redirectUrl, "_blank", "noopener,noreferrer");
+        setMessages((prev) => [
+          ...prev,
+          createChatMessage(
+            Sender.MODEL,
+            "3DS challenge opened in a new tab. Complete authentication and then continue."
+          ),
+        ]);
+        return;
+      }
+
+      if (
+        !("operation" in nexiPayload) ||
+        !nexiPayload.operation ||
+        typeof nexiPayload.operation !== "object"
+      ) {
+        throw new Error("Nexi did not return an operation payload.");
+      }
+
+      const paymentInstrument = createGooglePayInstrumentFromNexiResponse(
+        nexiPayload
+      );
       await handleConfirmPayment(paymentInstrument);
     } catch (error) {
       console.error("Failed to process Google Pay payment:", error);
