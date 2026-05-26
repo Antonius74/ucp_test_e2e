@@ -22,6 +22,8 @@ It includes:
 - A Python A2A server (`business_agent`) built with Google ADK and UCP SDK.
 - A React chat client (`chat-client`) that sends A2A JSON-RPC messages and renders typed UCP data.
 - A full mock commerce lifecycle: product discovery, checkout, fulfillment details, payment, and order completion.
+- Nexi XPay Build v3 card collection flow (hosted fields) through backend proxy endpoints.
+- Google Pay Web API integration forwarded server-side to Nexi staging endpoint.
 - Ollama as the LLM backend, configured by default to `ollama/gpt-oss:120b-cloud`.
 
 ## What This Solution Does
@@ -39,6 +41,7 @@ At runtime, the system performs the following sequence:
 5. Server returns A2A parts (`text` and/or `data`) containing UCP payloads:
 - `a2a.product_results`
 - `a2a.ucp.checkout`
+6. For card and wallet payment paths, client triggers Nexi proxy APIs (`/nexi/build-session`, `/nexi/finalize-payment`, `/nexi/build-state`, `/nexi/googlepay-order`) and maps successful operation payloads into UCP checkout completion.
 6. Client renders typed UI cards for products, checkout summary, payment method selection, and order confirmation.
 
 ## Protocols Used
@@ -119,7 +122,8 @@ flowchart LR
 | Message renderer | `chat-client/components/ChatMessage.tsx` | Renders text, products, checkout, payment selectors |
 | Product cards | `chat-client/components/ProductCard.tsx` | Displays typed `Product` and add-to-checkout CTA |
 | Checkout panel | `chat-client/components/Checkout.tsx` | Renders line items, totals, status, payment progression |
-| Payment UX | `chat-client/components/PaymentMethodSelector.tsx`, `PaymentConfirmation.tsx` | Mock payment method selection and confirm flow |
+| Payment UX | `chat-client/components/NexiCardPaymentForm.tsx`, `GooglePayButton.tsx`, `PaymentMethodSelector.tsx`, `PaymentConfirmation.tsx` | Card hosted fields (Build v3), Google Pay real token flow, saved card selection and payment confirmation |
+| Protocol dashboard | `chat-client/components/ProtocolDashboard.tsx` | Displays JSON-RPC request/response, token metadata, trace timeline, and ADK usage |
 
 ## End-to-End Request Sequence
 
@@ -228,6 +232,45 @@ The client expects typed A2A data keys:
 The protocol dashboard also renders a human-readable call-flow timeline and highlights whether the request was executed through ADK Runner or through deterministic fast paths.
 
 The UI now filters technical tool-call echoes and compresses verbose catalog prose when product cards are already present.
+
+## Nexi and Google Pay Integration (Current Branch)
+
+### Backend proxy endpoints
+
+- `POST /nexi/build-session` -> Nexi `POST /orders/build` (version 3)
+- `POST /nexi/finalize-payment` -> Nexi `POST /build/finalize_payment`
+- `GET /nexi/build-state` -> Nexi `GET /build/state` fallback for delayed SDK events
+- `GET /nexi/hfsdk.js` -> same-origin proxy for Nexi hosted fields SDK
+- `POST /nexi/googlepay-order` -> Nexi `POST /orders/googlepay`
+- `GET /googlepay/pay.js` -> same-origin proxy for Google Pay web SDK script
+
+### Card flow behavior
+
+1. Checkout triggers Build session creation.
+2. Client auto-selects `PAY_WITH_CARD`.
+3. On `CARD_DATA_COLLECTION`, secure card fields are rendered.
+4. `confirmData()` starts payment confirmation.
+5. On `READY_FOR_PAYMENT`, client finalizes with `/nexi/finalize-payment`.
+6. If SDK state callbacks are delayed/missing, client polls `/nexi/build-state`.
+7. On `PAYMENT_COMPLETE`, operation is mapped to a UCP payment instrument and sent to `complete_checkout`.
+
+### Google Pay behavior
+
+1. `GooglePayButton` calls `PaymentsClient.loadPaymentData(...)`.
+2. Returned `googlePayPaymentData` (including tokenization payload) is forwarded to backend.
+3. Backend posts to configured Nexi Google Pay endpoint with `x-api-key` in request headers.
+4. Upstream error details are propagated with correlation IDs (`correlation-id` and Nexi `cid`) to simplify production troubleshooting.
+
+### Current Google Pay staging endpoint
+
+- `https://stg-ta.nexigroup.com/api/phoenix-0.0/psp/api/v1/orders/googlepay`
+
+### Relevant environment variables
+
+- `NEXI_GOOGLEPAY_ENDPOINT`
+- `NEXI_GOOGLEPAY_API_KEY`
+- `NEXI_GOOGLEPAY_ENABLE_FALLBACK` (default `false` in this branch)
+- `NEXI_GOOGLEPAY_CAPTURE_TYPE` (supports `IMPLICIT` or `EXPLICIT`)
 
 ## Message and Payload Examples
 
@@ -362,9 +405,9 @@ Open: [http://127.0.0.1:3000](http://127.0.0.1:3000)
 3. Click **Add to Checkout** on one item
 4. Click **Start Payment**
 5. Provide required customer details if requested
-6. Click **Complete Payment**
-7. Pick a mock payment method and confirm
-8. Verify order status becomes `completed`
+6. Click **Paga con Carta** or **Paga con Google**
+7. Complete hosted fields (card) or authorize Google Pay wallet sheet
+8. Confirm checkout completion and verify order status becomes `completed`
 
 ## Testing
 
@@ -380,6 +423,11 @@ Current test coverage validates:
 - Full checkout lifecycle to completed order
 - Generic catalog query behavior (`which kind of prod do you have`, `what can i buy?`)
 - `update_checkout(quantity=0)` removes line item
+- Nexi build session endpoint contract
+- Nexi hosted SDK proxy endpoint
+- Nexi build state endpoint
+- Google Pay script proxy endpoint
+- Order history retrieval and protocol trace presence
 
 ## Troubleshooting
 
@@ -394,6 +442,12 @@ Current test coverage validates:
 - Hard-refresh browser (`Cmd+Shift+R`) to clear cached frontend code.
 - Verify `UCP-Agent` profile URL is reachable from backend.
 - Check that response includes `a2a.product_results` or `a2a.ucp.checkout` in `parts[].data`.
+
+### Google Pay returns `401 UNAUTHORIZED` or `PS0167`
+
+- `401 UNAUTHORIZED Authorization Missing` on staging generally indicates upstream authorization/configuration issues for the API key and merchant profile, not frontend formatting issues.
+- `PS0167` generally indicates the request passed header-level checks but was rejected during Google Pay service/token handling upstream.
+- Use propagated `correlation-id` and `cid` values when opening a Nexi support ticket.
 
 ### Model startup issues
 

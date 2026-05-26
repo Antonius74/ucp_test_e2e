@@ -14,11 +14,22 @@
    limitations under the License.
 -->
 
-# Cymbal Retail Agent
+# Cymbal Retail Agent (A2A + UCP + Ollama + Nexi)
 
-Example agent implementing A2A Extension for UCP
+This service is the backend of the A2A/UCP shopping demo. It exposes:
+- A2A JSON-RPC `message/send` endpoint for the chat client
+- UCP discovery endpoints
+- Nexi proxy endpoints for Build v3 card flow and Google Pay server-side forwarding
 
-### Pre-requisites:
+## What This Backend Does
+
+1. Negotiates UCP capabilities using `X-A2A-Extensions` and `UCP-Agent` headers.
+2. Executes shopping actions (catalog, cart, checkout, orders) through deterministic paths and ADK/Ollama paths.
+3. Handles payment completion in two modes:
+- UCP token completion (`complete_checkout`) through merchant mock authorization
+- Real Nexi proxy flows for card collection (Build v3) and Google Pay order forwarding.
+
+## Prerequisites
 
 1. Python 3.10+
 2. [Ollama](https://ollama.com/) running locally
@@ -28,59 +39,127 @@ Example agent implementing A2A Extension for UCP
 
 1. Start Ollama:
 
-   ```bash
-   /usr/local/bin/ollama serve
-   ```
+```bash
+/usr/local/bin/ollama serve
+```
 
-2. In a new terminal, set up Python env and install dependencies:
+2. Install dependencies:
 
-   ```bash
-   python3 -m venv .venv
-   .venv/bin/python -m pip install -e .
-   ```
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e .
+```
 
-3. Copy env file and keep defaults (Ollama):
+3. Configure environment:
 
-   ```bash
-   cp env.example .env
-   ```
+```bash
+cp env.example .env
+```
 
-4. Run the server:
+4. Run backend:
 
-   ```bash
-   .venv/bin/python -m business_agent.main
-   ```
+```bash
+.venv/bin/python -m business_agent.main --host 127.0.0.1 --port 10999
+```
 
 5. Verify endpoints:
-   - Agent Card: http://localhost:10999/.well-known/agent-card.json
-   - UCP Profile: http://localhost:10999/.well-known/ucp
+- Agent Card: http://127.0.0.1:10999/.well-known/agent-card.json
+- UCP Profile: http://127.0.0.1:10999/.well-known/ucp
 
-## Nexi XPay Build v3 (Card Payment)
+## HTTP Endpoints
 
-The chat client card checkout now uses Nexi XPay Build v3 via backend proxy endpoints:
-- `POST /nexi/build-session` -> calls Nexi `POST /orders/build`
-- `POST /nexi/finalize-payment` -> calls Nexi `POST /build/finalize_payment`
-- `POST /nexi/googlepay-order` -> calls Nexi `POST /orders/googlepay`
+### Discovery + A2A
+- `POST /` -> A2A JSON-RPC `message/send`
+- `GET /.well-known/agent-card.json`
+- `GET /.well-known/ucp`
 
-Environment variables:
+### Observability/Debug Pages
+- `GET /orders`
+- `GET /orders/{order_id}`
+- `GET /checkouts/{checkout_id}`
+- `GET /reservations`
+
+### Nexi Proxy Endpoints
+- `POST /nexi/build-session` -> Nexi `POST /orders/build`
+- `POST /nexi/finalize-payment` -> Nexi `POST /build/finalize_payment`
+- `GET /nexi/build-state?sessionId=...` -> Nexi `GET /build/state`
+- `GET /nexi/hfsdk.js` -> same-origin proxy for Nexi hosted fields SDK
+- `POST /nexi/googlepay-order` -> Nexi `POST /orders/googlepay`
+- `GET /googlepay/pay.js` -> same-origin proxy for Google Pay web SDK script
+
+## Nexi Build v3 + Google Pay Configuration
+
+Current default behavior in this branch:
+- Card flow base: sandbox/prod based on `NEXI_XPAY_ENV`
+- Google Pay endpoint: staging `stg-ta.nexigroup.com` (explicit URL)
+- Google Pay fallback: disabled by default
+- Google Pay header key is sent as `x-api-key` (header)
+
+### Environment Variables
+
+- `BUSINESS_AGENT_MODEL=ollama/gpt-oss:120b-cloud`
+- `OLLAMA_API_BASE=http://127.0.0.1:11434`
 
 - `NEXI_XPAY_ENV=TEST|PROD`
 - `NEXI_XPAY_API_KEY=<build-api-key>`
-- `NEXI_XPAY_API_BASE=https://xpaysandbox.nexigroup.com/api/phoenix-0.0/psp/api/v1` (optional override)
+- `NEXI_XPAY_API_BASE=<optional override>`
 - `NEXI_XPAY_MERCHANT_URL=https://your-domain.tld`
-- `NEXI_XPAY_RESULT_URL=https://your-domain.tld/order/{orderId}`
-- `NEXI_XPAY_CANCEL_URL=https://your-domain.tld/nexi/cancel`
-- `NEXI_XPAY_NOTIFICATION_URL=https://your-domain.tld/nexi/notify` (optional)
+- `NEXI_XPAY_RESULT_URL=https://your-domain.tld/ucp-order/{orderId}`
+- `NEXI_XPAY_CANCEL_URL=https://your-domain.tld/ucp-cancel`
+- `NEXI_XPAY_NOTIFICATION_URL=<optional>`
 - `NEXI_XPAY_LANGUAGE=ita`
 - `NEXI_XPAY_CAPTURE_TYPE=EXPLICIT|IMPLICIT`
-- `NEXI_XPAY_ENABLE_TEST_KEY_FALLBACK=true|false` (TEST only)
-- `NEXI_XPAY_TEST_FALLBACK_API_KEY=<optional-test-key>`
-- `NEXI_GOOGLEPAY_ENDPOINT=https://stg-ta.nexigroup.com/phoenix-0.0/psp/api/v1/orders/googlepay`
-- `NEXI_GOOGLEPAY_API_KEY=<googlepay-api-key>` (defaults to `NEXI_XPAY_API_KEY`)
+- `NEXI_XPAY_ENABLE_TEST_KEY_FALLBACK=true|false`
+- `NEXI_XPAY_TEST_FALLBACK_API_KEY=<optional>`
+
+- `NEXI_GOOGLEPAY_ENDPOINT=https://stg-ta.nexigroup.com/api/phoenix-0.0/psp/api/v1/orders/googlepay`
+- `NEXI_GOOGLEPAY_API_KEY=<googlepay-api-key>`
 - `NEXI_GOOGLEPAY_MERCHANT_ID=999999990`
 - `NEXI_GOOGLEPAY_TERMINAL_ID=0000999`
 - `NEXI_GOOGLEPAY_GATEWAY=nexigtw`
+- `NEXI_GOOGLEPAY_ENABLE_FALLBACK=false`
+- `NEXI_GOOGLEPAY_CAPTURE_TYPE=IMPLICIT|EXPLICIT`
 
-Note: Nexi Build requires a valid merchant URL domain (HTTP/HTTPS with host only, no path for `merchantUrl`).
-The Build payload is sent with `paymentSession` (action/capture/language/result/cancel URLs) as required by Build v3.
-If the primary TEST key fails with retryable gateway errors (for example `GW0035`), the backend can retry automatically with the official Nexi TEST key when `NEXI_XPAY_ENABLE_TEST_KEY_FALLBACK=true`.
+## Payment Flow Details
+
+### Card (Nexi Build v3)
+
+1. Frontend requests `POST /nexi/build-session`.
+2. Backend calls Nexi `orders/build` with `version: "3"` and returns `sessionId` + `fields`.
+3. Frontend loads hfsdk through `GET /api/nexi/hfsdk.js` (same-origin proxy).
+4. User confirms with `Build.confirmData(...)`.
+5. On `READY_FOR_PAYMENT`, frontend triggers `POST /nexi/finalize-payment`.
+6. If event callbacks are delayed/missing, frontend polls `GET /nexi/build-state` as fallback.
+7. Final state:
+- `PAYMENT_COMPLETE` + `operation` -> mapped to UCP payment instrument and checkout completion
+- `REDIRECTED_TO_EXTERNAL_DOMAIN` -> 3DS redirect.
+
+### Google Pay
+
+1. Frontend loads Google Pay SDK from `GET /api/googlepay/pay.js` (same-origin proxy, direct fallback available).
+2. On `loadPaymentData(...)`, tokenized `googlePayPaymentData` is forwarded to `POST /nexi/googlepay-order`.
+3. Backend posts payload to configured Nexi staging endpoint using `x-api-key` header and runtime `correlation-id`.
+4. Backend returns raw upstream details (`errors`, `upstreamCid`, `endpointUsed`) for clear troubleshooting.
+
+## Current Known Behaviors
+
+- If Nexi returns `401 UNAUTHORIZED Authorization Missing` on staging, request is reaching Nexi but credentials/authorization are not accepted upstream.
+- If Nexi returns `PS0167`, request passed auth checks but Google Pay upstream service rejected token/session payload.
+- Backend surfaces error details and correlation IDs to help support troubleshooting.
+
+## Testing
+
+Run E2E suite:
+
+```bash
+cd a2a/business_agent
+.venv/bin/python -m unittest -v tests/test_a2a_e2e.py
+```
+
+The current suite includes:
+- A2A/UCP discovery and checkout lifecycle
+- Nexi build session endpoint
+- Nexi hosted SDK proxy endpoint
+- Nexi build state endpoint
+- Google Pay script proxy endpoint
+- order history and protocol trace checks

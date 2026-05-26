@@ -36,8 +36,9 @@ The `a2a/` demo is the most complete example in this repo. It shows:
 - Product discovery and checkout lifecycle with typed UCP payloads.
 - Multi-agent orchestration with Shop Agent + Merchant Agent over A2A-style
   `message/send` interactions.
-- Simulated payment completion using tokenized credentials (card, Apple Pay,
-  Google Pay UX simulation).
+- Nexi XPay Build v3 card hosted-fields flow via backend proxy endpoints.
+- Google Pay Web API integration with server-side forwarding to Nexi staging.
+- UCP checkout completion using payment operation/token payloads.
 - Protocol observability from the frontend dashboard (JSON-RPC payloads, A2A
   traces, token metadata).
 
@@ -90,11 +91,12 @@ Each chat request is a JSON-RPC 2.0 call to `/api`:
 
 ### Payment in the Demo
 
-The payment flow is simulated end-to-end:
-- Card payment form (Nexi-style UX) with optional card saving.
-- Saved cards reused in later checkouts (last 4 digits shown).
-- Apple Pay / Google Pay simulated wallet authorization flow.
-- Merchant-side token authorization via A2A sub-agent and mock gateway payloads.
+The payment flow includes both real PSP proxy integrations and UCP completion:
+- Card payment form with Nexi Build v3 hosted fields (`orders/build` + `build/finalize_payment`).
+- Google Pay Web SDK flow, with tokenized payload forwarded by backend to Nexi `orders/googlepay`.
+- Build-state fallback polling (`/build/state`) to recover from delayed/missing SDK transitions.
+- Optional saved-card UX and wallet selections in chat UI.
+- Merchant-side checkout finalization through UCP payment data and protocol trace.
 
 ## Quick Start (A2A Demo)
 
