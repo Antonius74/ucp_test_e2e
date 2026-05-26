@@ -20,6 +20,7 @@ import html
 import json
 import logging
 import os
+from urllib.parse import urlparse
 
 from pathlib import Path
 import httpx
@@ -35,6 +36,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse
 from starlette.responses import HTMLResponse
 from starlette.responses import JSONResponse
+from starlette.responses import Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 import uvicorn
@@ -45,6 +47,8 @@ from .agent import store
 from .agent_executor import ADKAgentExecutor
 from .nexi_xpay import create_build_session
 from .nexi_xpay import finalize_build_payment
+from .nexi_xpay import get_build_state
+from .nexi_xpay import load_nexi_config
 from .nexi_xpay import NexiConfigurationError
 from .nexi_xpay import NexiUpstreamError
 from .nexi_xpay import process_googlepay_order
@@ -534,6 +538,33 @@ async def run(host, port):
                 status_code=502,
             )
 
+    async def nexi_build_state(request: Request):
+        session_id = str(request.query_params.get("sessionId") or "").strip()
+        if not session_id:
+            return JSONResponse(
+                {"error": "sessionId is required."},
+                status_code=400,
+            )
+
+        try:
+            response_payload = await get_build_state(session_id=session_id)
+            return JSONResponse(response_payload)
+        except NexiConfigurationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        except NexiUpstreamError as exc:
+            return JSONResponse(
+                {
+                    "error": "Nexi /build/state request failed.",
+                    "details": exc.payload,
+                },
+                status_code=exc.status_code,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": f"Nexi connectivity error: {exc}"},
+                status_code=502,
+            )
+
     async def nexi_googlepay_order(request: Request):
         try:
             payload = await request.json()
@@ -610,6 +641,111 @@ async def run(host, port):
                 status_code=502,
             )
 
+    async def nexi_hfsdk_script(request: Request):
+        source_param = (request.query_params.get("source") or "").strip()
+
+        try:
+            config = load_nexi_config()
+        except NexiConfigurationError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+        if source_param:
+            source_url = source_param
+        else:
+            parsed_api = urlparse(config.api_base)
+            source_url = (
+                f"{parsed_api.scheme}://{parsed_api.netloc}/monetaweb/resources/hfsdk.js"
+            )
+
+        parsed = urlparse(source_url)
+        allowed_hosts = {
+            "xpaysandbox.nexigroup.com",
+            "xpay.nexigroup.com",
+            "stg-ta.nexigroup.com",
+            "local.monetaonline.it",
+        }
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc not in allowed_hosts
+            or not parsed.path.endswith("/monetaweb/resources/hfsdk.js")
+        ):
+            return JSONResponse(
+                {
+                    "error": "Invalid hfsdk source URL.",
+                    "source": source_url,
+                },
+                status_code=400,
+            )
+
+        try:
+            async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+                upstream = await client.get(
+                    source_url,
+                    headers={
+                        "Accept": "application/javascript,text/javascript,*/*",
+                        "User-Agent": "ucp-nexi-proxy/1.0",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": f"Failed to fetch hfsdk script: {exc}"},
+                status_code=502,
+            )
+
+        if upstream.status_code >= 400:
+            return JSONResponse(
+                {
+                    "error": "Upstream hfsdk request failed.",
+                    "status": upstream.status_code,
+                    "source": source_url,
+                },
+                status_code=502,
+            )
+
+        return Response(
+            content=upstream.text,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Upstream-Source": source_url,
+            },
+        )
+
+    async def googlepay_web_script(_request: Request):
+        source_url = "https://pay.google.com/gp/p/js/pay.js"
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                upstream = await client.get(
+                    source_url,
+                    headers={
+                        "Accept": "application/javascript,text/javascript,*/*",
+                        "User-Agent": "ucp-gpay-proxy/1.0",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": f"Failed to fetch Google Pay script: {exc}"},
+                status_code=502,
+            )
+
+        if upstream.status_code >= 400:
+            return JSONResponse(
+                {
+                    "error": "Upstream Google Pay script request failed.",
+                    "status": upstream.status_code,
+                },
+                status_code=502,
+            )
+
+        return Response(
+            content=upstream.text,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Upstream-Source": source_url,
+            },
+        )
+
     routes.extend(
         [
             Route("/checkouts/{checkout_id}", checkout_page),
@@ -623,9 +759,24 @@ async def run(host, port):
                 methods=["POST"],
             ),
             Route(
+                "/nexi/build-state",
+                nexi_build_state,
+                methods=["GET"],
+            ),
+            Route(
                 "/nexi/googlepay-order",
                 nexi_googlepay_order,
                 methods=["POST"],
+            ),
+            Route(
+                "/nexi/hfsdk.js",
+                nexi_hfsdk_script,
+                methods=["GET"],
+            ),
+            Route(
+                "/googlepay/pay.js",
+                googlepay_web_script,
+                methods=["GET"],
             ),
             Route(
                 "/.well-known/ucp",

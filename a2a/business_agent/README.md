@@ -65,15 +65,22 @@ The chat client card checkout now uses Nexi XPay Build v3 via backend proxy endp
 Environment variables:
 
 - `NEXI_XPAY_ENV=TEST|PROD`
-- `NEXI_XPAY_API_KEY=<your-api-key>`
+- `NEXI_XPAY_API_KEY=<build-api-key>`
+- `NEXI_XPAY_API_BASE=https://xpaysandbox.nexigroup.com/api/phoenix-0.0/psp/api/v1` (optional override)
 - `NEXI_XPAY_MERCHANT_URL=https://your-domain.tld`
-- `NEXI_XPAY_RESULT_URL=https://your-domain.tld/nexi/result`
+- `NEXI_XPAY_RESULT_URL=https://your-domain.tld/order/{orderId}`
 - `NEXI_XPAY_CANCEL_URL=https://your-domain.tld/nexi/cancel`
 - `NEXI_XPAY_NOTIFICATION_URL=https://your-domain.tld/nexi/notify` (optional)
 - `NEXI_XPAY_LANGUAGE=ita`
+- `NEXI_XPAY_CAPTURE_TYPE=EXPLICIT|IMPLICIT`
+- `NEXI_XPAY_ENABLE_TEST_KEY_FALLBACK=true|false` (TEST only)
+- `NEXI_XPAY_TEST_FALLBACK_API_KEY=<optional-test-key>`
 - `NEXI_GOOGLEPAY_ENDPOINT=https://stg-ta.nexigroup.com/phoenix-0.0/psp/api/v1/orders/googlepay`
+- `NEXI_GOOGLEPAY_API_KEY=<googlepay-api-key>` (defaults to `NEXI_XPAY_API_KEY`)
 - `NEXI_GOOGLEPAY_MERCHANT_ID=999999990`
 - `NEXI_GOOGLEPAY_TERMINAL_ID=0000999`
 - `NEXI_GOOGLEPAY_GATEWAY=nexigtw`
 
 Note: Nexi Build requires a valid merchant URL domain (HTTP/HTTPS with host only, no path for `merchantUrl`).
+The Build payload is sent with `paymentSession` (action/capture/language/result/cancel URLs) as required by Build v3.
+If the primary TEST key fails with retryable gateway errors (for example `GW0035`), the backend can retry automatically with the official Nexi TEST key when `NEXI_XPAY_ENABLE_TEST_KEY_FALLBACK=true`.

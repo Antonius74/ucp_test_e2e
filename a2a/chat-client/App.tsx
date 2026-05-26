@@ -154,6 +154,52 @@ function extractTokens(value: unknown, collector: Set<string>): void {
   }
 }
 
+function formatNexiErrorDetails(details: unknown): string {
+  if (!details || typeof details !== "object") {
+    return "";
+  }
+  const detailsRecord = details as Record<string, unknown>;
+  const upstreamCid =
+    typeof detailsRecord.upstreamCid === "string"
+      ? detailsRecord.upstreamCid
+      : null;
+
+  const errors = detailsRecord.errors;
+  if (Array.isArray(errors) && errors.length > 0) {
+    const first = errors[0];
+    if (first && typeof first === "object") {
+      const firstRecord = first as Record<string, unknown>;
+      const code =
+        typeof firstRecord.code === "string" ? firstRecord.code : "";
+      const description =
+        typeof firstRecord.description === "string"
+          ? firstRecord.description
+          : "Nexi upstream error";
+      const codePrefix = code ? `[${code}] ` : "";
+      const cidSuffix = upstreamCid ? ` (cid: ${upstreamCid})` : "";
+      return `${codePrefix}${description}${cidSuffix}`;
+    }
+  }
+
+  const primaryAttempt = detailsRecord.primaryAttempt;
+  if (primaryAttempt && typeof primaryAttempt === "object") {
+    const nested = formatNexiErrorDetails(primaryAttempt);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  const fallbackAttempt = detailsRecord.fallbackAttempt;
+  if (fallbackAttempt && typeof fallbackAttempt === "object") {
+    const nested = formatNexiErrorDetails(fallbackAttempt);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return "";
+}
+
 function getPartData(
   part: Record<string, unknown>
 ): Record<string, unknown> | undefined {
@@ -588,6 +634,17 @@ function App() {
     _checkout: Checkout,
     wallet: WalletType
   ) => {
+    if (wallet === "google_pay") {
+      setMessages((prev) => [
+        ...prev,
+        createChatMessage(
+          Sender.MODEL,
+          "Google Pay in this demo is available only via the native Google Pay API button."
+        ),
+      ]);
+      return;
+    }
+
     const walletLabel = wallet === "google_pay" ? "Google Pay" : "Apple Pay";
     const resolvedEmail = (user_email || "buyer@example.com").trim();
     setUserEmail(resolvedEmail);
@@ -683,7 +740,15 @@ function App() {
           typeof responsePayload.error === "string"
             ? responsePayload.error
             : "Nexi Google Pay request failed.";
-        throw new Error(message);
+        const details =
+          responsePayload &&
+          typeof responsePayload === "object" &&
+          "details" in responsePayload
+            ? formatNexiErrorDetails(
+                (responsePayload as { details?: unknown }).details
+              )
+            : "";
+        throw new Error(details ? `${message} ${details}` : message);
       }
 
       const nexiPayload = responsePayload as Record<string, unknown>;
@@ -717,11 +782,15 @@ function App() {
       await handleConfirmPayment(paymentInstrument);
     } catch (error) {
       console.error("Failed to process Google Pay payment:", error);
+      const detail =
+        error instanceof Error && error.message
+          ? ` (${error.message})`
+          : "";
       setMessages((prev) => [
         ...prev,
         createChatMessage(
           Sender.MODEL,
-          "Google Pay payment failed. Please try again or pay with card."
+          `Google Pay payment failed${detail}. Please try again or pay with card.`
         ),
       ]);
     }
@@ -922,10 +991,16 @@ function App() {
         setContextId(data.result.contextId);
       }
       //if there is a task and it's in one of the active states
-      if (
-        data.result?.id &&
-        data.result?.status?.state in ["working", "submitted", "input-required"]
-      ) {
+      const activeTaskStates = new Set([
+        "working",
+        "submitted",
+        "input-required",
+      ]);
+      const taskState =
+        typeof data.result?.status?.state === "string"
+          ? data.result.status.state
+          : "";
+      if (data.result?.id && activeTaskStates.has(taskState)) {
         setTaskId(data.result.id);
       } else {
         //if not reset taskId

@@ -323,6 +323,78 @@ class A2AOllamaE2ETest(unittest.TestCase):
         self.assertIn("ucp", ucp_profile)
         self.assertIn("capabilities", ucp_profile["ucp"])
 
+    def test_nexi_build_session_endpoint_returns_session(self) -> None:
+        payload = {
+            "checkoutId": f"e2e-{uuid.uuid4()}",
+            "amount": 1159,
+            "currency": "EUR",
+        }
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{BACKEND_BASE_URL}/nexi/build-session",
+                json=payload,
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertIsInstance(body.get("sessionId"), str)
+        self.assertTrue(body.get("sessionId"))
+        self.assertIn("fields", body)
+        self.assertIsInstance(body.get("fields"), list)
+        self.assertTrue(
+            any(
+                isinstance(field, dict) and field.get("id") == "PAY_WITH_CARD"
+                for field in body.get("fields", [])
+            ),
+            "PAY_WITH_CARD iframe field missing in Nexi build session response.",
+        )
+
+    def test_nexi_hfsdk_proxy_endpoint_returns_script(self) -> None:
+        script_url = (
+            f"{BACKEND_BASE_URL}/nexi/hfsdk.js"
+            "?source=https%3A%2F%2Fxpaysandbox.nexigroup.com%2Fmonetaweb%2Fresources%2Fhfsdk.js"
+        )
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(script_url)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("application/javascript", response.headers.get("content-type", ""))
+        self.assertIn("class Build", response.text)
+
+    def test_nexi_build_state_endpoint_returns_workflow_state(self) -> None:
+        payload = {
+            "checkoutId": f"e2e-state-{uuid.uuid4()}",
+            "amount": 1159,
+            "currency": "EUR",
+        }
+        with httpx.Client(timeout=30.0) as client:
+            create_response = client.post(
+                f"{BACKEND_BASE_URL}/nexi/build-session",
+                json=payload,
+            )
+            self.assertEqual(create_response.status_code, 200, create_response.text)
+            session_id = create_response.json().get("sessionId")
+            self.assertIsInstance(session_id, str)
+            self.assertTrue(session_id)
+
+            state_response = client.get(
+                f"{BACKEND_BASE_URL}/nexi/build-state",
+                params={"sessionId": session_id},
+            )
+
+        self.assertEqual(state_response.status_code, 200, state_response.text)
+        body = state_response.json()
+        self.assertIsInstance(body.get("state"), str)
+        self.assertTrue(body.get("state"))
+
+    def test_googlepay_script_proxy_endpoint_returns_script(self) -> None:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(f"{BACKEND_BASE_URL}/googlepay/pay.js")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("application/javascript", response.headers.get("content-type", ""))
+        self.assertIn("google.payments", response.text)
+
     def test_checkout_lifecycle_happy_path(self) -> None:
         context_id: str | None = None
 

@@ -202,35 +202,33 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
                   </button>
                 )}
                 {onWalletPayment && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => onWalletPayment(checkout, "apple_pay")}
-                      className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
-                    >
-                      Paga con Apple
-                    </button>
-                    {onGooglePayAuthorized ? (
-                      <GooglePayButton
-                        totalPrice={(
-                          (grandTotal?.amount || 0) / 100
-                        ).toFixed(2)}
-                        currencyCode={checkout.currency || "EUR"}
-                        onAuthorized={(payload) =>
-                          onGooglePayAuthorized(checkout, payload)
-                        }
-                        onError={onGooglePayError}
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        disabled
-                        className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-slate-100 px-4 text-sm font-semibold text-slate-500"
-                      >
-                        Google Pay unavailable
-                      </button>
-                    )}
-                  </>
+                  <button
+                    type="button"
+                    onClick={() => onWalletPayment(checkout, "apple_pay")}
+                    className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                  >
+                    Paga con Apple
+                  </button>
+                )}
+                {onGooglePayAuthorized ? (
+                  <GooglePayButton
+                    totalPrice={(
+                      (grandTotal?.amount || 0) / 100
+                    ).toFixed(2)}
+                    currencyCode={checkout.currency || "EUR"}
+                    onAuthorized={(payload) =>
+                      onGooglePayAuthorized(checkout, payload)
+                    }
+                    onError={onGooglePayError}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-slate-100 px-4 text-sm font-semibold text-slate-500"
+                  >
+                    Google Pay unavailable
+                  </button>
                 )}
               </>
             )}

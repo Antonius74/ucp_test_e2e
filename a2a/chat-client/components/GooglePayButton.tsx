@@ -49,13 +49,6 @@ interface GooglePayPaymentData {
 interface GooglePayPaymentsClient {
   isReadyToPay(request: unknown): Promise<{ result: boolean }>;
   loadPaymentData(request: unknown): Promise<GooglePayPaymentData>;
-  createButton(options: {
-    onClick: () => void;
-    buttonColor?: "black" | "white" | "default";
-    buttonType?: "pay" | "buy" | "checkout" | "plain";
-    buttonLocale?: string;
-    buttonSizeMode?: "fill" | "static";
-  }): HTMLElement;
 }
 
 interface GooglePayApi {
@@ -73,7 +66,10 @@ type GooglePayWindow = Window & {
 };
 
 const GOOGLE_PAY_SCRIPT_ID = "google-pay-web-js";
-const GOOGLE_PAY_SCRIPT_SRC = "https://pay.google.com/gp/p/js/pay.js";
+const GOOGLE_PAY_SCRIPT_SOURCES = [
+  "/api/googlepay/pay.js",
+  "https://pay.google.com/gp/p/js/pay.js",
+];
 const DEFAULT_ALLOWED_AUTH_METHODS = ["PAN_ONLY", "CRYPTOGRAM_3DS"];
 const DEFAULT_ALLOWED_CARD_NETWORKS = ["VISA", "MASTERCARD"];
 
@@ -90,35 +86,74 @@ function loadGooglePayScript(): Promise<void> {
     return Promise.reject(new Error("Google Pay is only available in browser."));
   }
 
+  const waitForApi = (timeoutMs = 4000): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const tick = () => {
+        const latestWindow = window as GooglePayWindow;
+        if (latestWindow.google?.payments?.api?.PaymentsClient) {
+          resolve();
+          return;
+        }
+        if (Date.now() - startedAt > timeoutMs) {
+          reject(new Error("Google Pay API unavailable after script load."));
+          return;
+        }
+        window.setTimeout(tick, 50);
+      };
+      tick();
+    });
+
+  const appendScript = (src: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.id = GOOGLE_PAY_SCRIPT_ID;
+      script.src = src;
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () =>
+        reject(new Error(`Failed to load Google Pay script: ${src}`));
+      document.head.appendChild(script);
+    });
+
   const gWindow = window as GooglePayWindow;
   if (gWindow.google?.payments?.api?.PaymentsClient) {
     return Promise.resolve();
   }
 
-  return new Promise((resolve, reject) => {
-    const existing = document.getElementById(
-      GOOGLE_PAY_SCRIPT_ID
-    ) as HTMLScriptElement | null;
+  return (async () => {
+    let lastError: Error | null = null;
+    for (const source of GOOGLE_PAY_SCRIPT_SOURCES) {
+      const existing = document.getElementById(
+        GOOGLE_PAY_SCRIPT_ID
+      ) as HTMLScriptElement | null;
 
-    if (existing) {
-      existing.addEventListener("load", () => resolve(), { once: true });
-      existing.addEventListener(
-        "error",
-        () => reject(new Error("Failed to load Google Pay script.")),
-        { once: true }
-      );
-      return;
+      if (existing) {
+        const existingSrc = existing.getAttribute("src") || "";
+        if (existingSrc === source) {
+          try {
+            await waitForApi();
+            return;
+          } catch {
+            existing.remove();
+          }
+        } else {
+          existing.remove();
+        }
+      }
+
+      try {
+        await appendScript(source);
+        await waitForApi();
+        return;
+      } catch (error) {
+        lastError =
+          error instanceof Error ? error : new Error(String(error));
+      }
     }
 
-    const script = document.createElement("script");
-    script.id = GOOGLE_PAY_SCRIPT_ID;
-    script.src = GOOGLE_PAY_SCRIPT_SRC;
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () =>
-      reject(new Error("Failed to load Google Pay script."));
-    document.head.appendChild(script);
-  });
+    throw lastError || new Error("Failed to initialize Google Pay script.");
+  })();
 }
 
 const GooglePayButton = ({
@@ -129,7 +164,6 @@ const GooglePayButton = ({
 }: GooglePayButtonProps) => {
   const [state, setState] = useState<GooglePayButtonState>("loading");
   const [isProcessing, setIsProcessing] = useState(false);
-  const buttonContainerRef = useRef<HTMLDivElement>(null);
   const paymentsClientRef = useRef<GooglePayPaymentsClient | null>(null);
   const onAuthorizedRef = useRef(onAuthorized);
   const onErrorRef = useRef(onError);
@@ -232,6 +266,68 @@ const GooglePayButton = ({
 
   const isProcessingRef = useRef(false);
 
+  const requestGooglePayPayment = async () => {
+    const activeClient = paymentsClientRef.current;
+    if (!activeClient || isProcessingRef.current || state !== "ready") {
+      return;
+    }
+    isProcessingRef.current = true;
+    setIsProcessing(true);
+
+    try {
+      const paymentData = await activeClient.loadPaymentData(
+        paymentDataRequestRef.current
+      );
+      const token = paymentData.paymentMethodData?.tokenizationData?.token;
+      const paymentMethodType = paymentData.paymentMethodData?.type;
+
+      if (!token || !paymentMethodType) {
+        throw new Error("Google Pay token is missing.");
+      }
+
+      await onAuthorizedRef.current({
+        apiVersion: paymentData.apiVersion ?? 2,
+        apiVersionMinor: paymentData.apiVersionMinor ?? 0,
+        email: paymentData.email,
+        paymentMethodData: {
+          description: paymentData.paymentMethodData?.description,
+          info: {
+            cardDetails: paymentData.paymentMethodData?.info?.cardDetails,
+            cardFundingSource:
+              paymentData.paymentMethodData?.info?.cardFundingSource,
+            cardNetwork: paymentData.paymentMethodData?.info?.cardNetwork,
+          },
+          tokenizationData: {
+            token,
+            type:
+              paymentData.paymentMethodData?.tokenizationData?.type ||
+              "PAYMENT_GATEWAY",
+          },
+          type: paymentMethodType,
+        },
+      });
+    } catch (error) {
+      console.error("Google Pay payment failed:", error);
+      const errorCode =
+        error &&
+        typeof error === "object" &&
+        "statusCode" in error &&
+        typeof (error as { statusCode?: unknown }).statusCode === "string"
+          ? (error as { statusCode: string }).statusCode
+          : "";
+      if (errorCode === "CANCELED") {
+        onErrorRef.current?.("Google Pay payment cancelled.");
+      } else {
+        onErrorRef.current?.(
+          "Google Pay payment failed. Please try again."
+        );
+      }
+    } finally {
+      isProcessingRef.current = false;
+      setIsProcessing(false);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
 
@@ -250,101 +346,40 @@ const GooglePayButton = ({
 
         const client = new ApiCtor({ environment: config.environment });
         paymentsClientRef.current = client;
-
-        const readyToPay = await client.isReadyToPay({
-          apiVersion: 2,
-          apiVersionMinor: 0,
-          allowedPaymentMethods: [baseCardMethod],
-        });
+        let readyToPayResult = false;
+        try {
+          const readyToPay = await client.isReadyToPay({
+            apiVersion: 2,
+            apiVersionMinor: 0,
+            allowedPaymentMethods: [baseCardMethod],
+            existingPaymentMethodRequired: false,
+          });
+          readyToPayResult = Boolean(readyToPay?.result);
+        } catch (readyError) {
+          console.warn("Google Pay isReadyToPay check failed:", readyError);
+        }
 
         if (cancelled) {
           return;
         }
 
-        if (!readyToPay?.result) {
-          setState("unavailable");
-          return;
-        }
-
-        const container = buttonContainerRef.current;
-        if (!container) {
-          return;
-        }
-
-        container.innerHTML = "";
-        const button = client.createButton({
-          onClick: async () => {
-            const activeClient = paymentsClientRef.current;
-            if (!activeClient || isProcessingRef.current) {
-              return;
-            }
-            isProcessingRef.current = true;
-            setIsProcessing(true);
-
-            try {
-              const paymentData = await activeClient.loadPaymentData(
-                paymentDataRequestRef.current
-              );
-              const token = paymentData.paymentMethodData?.tokenizationData?.token;
-              const paymentMethodType = paymentData.paymentMethodData?.type;
-
-              if (!token || !paymentMethodType) {
-                throw new Error("Google Pay token is missing.");
-              }
-
-              await onAuthorizedRef.current({
-                apiVersion: paymentData.apiVersion ?? 2,
-                apiVersionMinor: paymentData.apiVersionMinor ?? 0,
-                email: paymentData.email,
-                paymentMethodData: {
-                  description: paymentData.paymentMethodData?.description,
-                  info: {
-                    cardDetails: paymentData.paymentMethodData?.info?.cardDetails,
-                    cardFundingSource:
-                      paymentData.paymentMethodData?.info?.cardFundingSource,
-                    cardNetwork: paymentData.paymentMethodData?.info?.cardNetwork,
-                  },
-                  tokenizationData: {
-                    token,
-                    type:
-                      paymentData.paymentMethodData?.tokenizationData?.type ||
-                      "PAYMENT_GATEWAY",
-                  },
-                  type: paymentMethodType,
-                },
-              });
-            } catch (error) {
-              console.error("Google Pay payment failed:", error);
-              const errorCode =
-                error &&
-                typeof error === "object" &&
-                "statusCode" in error &&
-                typeof (error as { statusCode?: unknown }).statusCode === "string"
-                  ? (error as { statusCode: string }).statusCode
-                  : "";
-              if (errorCode === "CANCELED") {
-                onErrorRef.current?.("Google Pay payment cancelled.");
-              } else {
-                onErrorRef.current?.(
-                  "Google Pay payment failed. Please try again."
-                );
-              }
-            } finally {
-              isProcessingRef.current = false;
-              setIsProcessing(false);
-            }
-          },
-          buttonColor: "black",
-          buttonType: "pay",
-          buttonSizeMode: "fill",
-        });
-
-        container.appendChild(button);
         setState("ready");
+        if (!readyToPayResult) {
+          onErrorRef.current?.(
+            "Google Pay API loaded, but this browser/device reported wallet unavailable. You can still try clicking Google Pay."
+          );
+        }
       } catch (error) {
         console.error("Google Pay setup failed:", error);
         if (!cancelled) {
           setState("unavailable");
+          const reason =
+            error instanceof Error && error.message
+              ? ` (${error.message})`
+              : "";
+          onErrorRef.current?.(
+            `Google Pay script could not be initialized in this browser${reason}.`
+          );
         }
       }
     }
@@ -367,15 +402,24 @@ const GooglePayButton = ({
     );
   }
 
+  const buttonText =
+    state === "loading"
+      ? "Loading Google Pay..."
+      : isProcessing
+        ? "Processing..."
+        : "Paga con Google";
+
   return (
-    <div className="relative h-10 min-w-[150px]">
-      <div ref={buttonContainerRef} className="h-10 min-w-[150px]" />
-      {(state === "loading" || isProcessing) && (
-        <div className="absolute inset-0 flex items-center justify-center rounded-md border border-slate-300 bg-slate-100 text-xs font-medium text-slate-500">
-          {isProcessing ? "Processing..." : "Loading Google Pay..."}
-        </div>
-      )}
-    </div>
+    <button
+      type="button"
+      onClick={() => {
+        void requestGooglePayPayment();
+      }}
+      disabled={state !== "ready" || isProcessing}
+      className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+    >
+      {buttonText}
+    </button>
   );
 };
 

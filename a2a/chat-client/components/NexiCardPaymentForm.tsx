@@ -36,6 +36,17 @@ interface NexiBuildSessionResponse {
   fields?: NexiHostedField[];
   hfsdkUrl?: string;
   nexiDomain?: string;
+  warnings?: Array<{
+    code?: string;
+    description?: string;
+  }>;
+  details?: {
+    errors?: Array<{
+      code?: string;
+      description?: string;
+    }>;
+  };
+  error?: string;
 }
 
 interface NexiOperation {
@@ -48,6 +59,13 @@ interface NexiFinalizeResponse {
   state?: string;
   url?: string;
   operation?: NexiOperation;
+  details?: {
+    errors?: Array<{
+      code?: string;
+      description?: string;
+    }>;
+  };
+  error?: string;
 }
 
 interface NexiBuildFlowEvent {
@@ -60,18 +78,38 @@ interface NexiBuildFlowEvent {
   errorCode?: string;
 }
 
+type NexiWorkflowState =
+  | "PAYMENT_METHOD_SELECTION"
+  | "CARD_DATA_COLLECTION"
+  | "READY_FOR_PAYMENT"
+  | "REDIRECTED_TO_EXTERNAL_DOMAIN"
+  | "GDI_VERIFICATION"
+  | "PAYMENT_COMPLETE";
+
 interface NexiBuildInstance {
   confirmData: (loader?: () => void) => void;
+  clickAction: (targetId: string) => void;
 }
 
 interface NexiBuildOptions {
-  onBuildSuccess?: (evtData: NexiBuildFlowEvent) => void;
+  onBuildSuccess?: (
+    evtData: NexiBuildFlowEvent,
+    state?: NexiWorkflowState
+  ) => void;
   onBuildError?: (evtData: NexiBuildFlowEvent) => void;
   onConfirmError?: (evtData: NexiBuildFlowEvent) => void;
+  onAllFieldsLoaded?: () => void;
+  onComponentUnavailable?: (evtData: NexiBuildFlowEvent) => void;
   onBuildFlowStateChange?: (
     evtData: NexiBuildFlowEvent,
-    state: string
+    state: NexiWorkflowState
   ) => void;
+}
+
+interface NexiBuildStateResponse {
+  state?: string;
+  url?: string;
+  operation?: NexiOperation;
 }
 
 type NexiBuildConstructor = new (options: NexiBuildOptions) => NexiBuildInstance;
@@ -83,22 +121,227 @@ declare global {
 }
 
 const HFSDK_SCRIPT_ID = "nexi-hfsdk";
+const BUILD_GLOBAL_WAIT_TIMEOUT_MS = 4000;
+const BUILD_GLOBAL_POLL_INTERVAL_MS = 50;
+const AUTO_SELECT_CARD_DELAY_MS = 220;
+const AUTO_SELECT_CARD_MAX_ATTEMPTS = 10;
+const CARD_FIELDS_WAIT_TIMEOUT_MS = 4000;
+const CONFIRM_PAYMENT_TIMEOUT_MS = 12000;
+const FINALIZE_POLL_RETRY_DELAY_MS = 1200;
+const FINALIZE_POLL_MAX_ATTEMPTS = 3;
+const SECURE_CARD_INPUT_IDS = new Set([
+  "CARD_PAN",
+  "PAN",
+  "CARD_NUMBER",
+  "EXPIRATION_DATE",
+  "CARD_EXPIRY",
+  "CVV",
+  "CVC",
+  "SECURITY_CODE",
+]);
 
-function loadScript(scriptId: string, src: string): Promise<void> {
-  const existing = document.getElementById(scriptId) as HTMLScriptElement | null;
-  if (existing) {
-    return Promise.resolve();
+function resolveBuildConstructor(): NexiBuildConstructor | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+
+  const fromWindow = window.Build;
+  if (typeof fromWindow === "function") {
+    return fromWindow;
+  }
+
+  const fromGlobalThis = (globalThis as { Build?: unknown }).Build;
+  if (typeof fromGlobalThis === "function") {
+    return fromGlobalThis as NexiBuildConstructor;
+  }
+
+  try {
+    const fromLexicalScope = Function(
+      "return typeof Build === 'function' ? Build : undefined;"
+    )() as unknown;
+    if (typeof fromLexicalScope === "function") {
+      return fromLexicalScope as NexiBuildConstructor;
+    }
+  } catch {
+    // Ignore lexical lookup errors and let the caller handle missing constructor.
+  }
+
+  return undefined;
+}
+
+function formatNexiErrorMessage(
+  fallback: string,
+  details?: unknown
+): string {
+  if (!details || typeof details !== "object") {
+    return fallback;
+  }
+
+  const detailsRecord = details as Record<string, unknown>;
+  const errors = detailsRecord.errors;
+  const upstreamCid =
+    typeof detailsRecord.upstreamCid === "string"
+      ? detailsRecord.upstreamCid
+      : null;
+  if (Array.isArray(errors) && errors.length > 0) {
+    const first = errors[0];
+    if (first && typeof first === "object") {
+      const firstRecord = first as Record<string, unknown>;
+      const codeRaw = firstRecord.code;
+      const descriptionRaw = firstRecord.description;
+      const code =
+        typeof codeRaw === "string" && codeRaw.trim()
+          ? `[${codeRaw}] `
+          : "";
+      const desc =
+        typeof descriptionRaw === "string" && descriptionRaw.trim()
+          ? descriptionRaw
+          : "Unknown Nexi error";
+      const cidSuffix = upstreamCid ? ` (cid: ${upstreamCid})` : "";
+      return `${code}${desc}${cidSuffix}`;
+    }
+  }
+
+  const primaryAttempt = detailsRecord.primaryAttempt;
+  if (primaryAttempt && typeof primaryAttempt === "object") {
+    const nested = formatNexiErrorMessage(fallback, primaryAttempt);
+    if (nested !== fallback) {
+      return nested;
+    }
+  }
+
+  const fallbackAttempt = detailsRecord.fallbackAttempt;
+  if (fallbackAttempt && typeof fallbackAttempt === "object") {
+    const nested = formatNexiErrorMessage(fallback, fallbackAttempt);
+    if (nested !== fallback) {
+      return nested;
+    }
+  }
+
+  return fallback;
+}
+
+function hasSecureCardInputFields(fields: NexiHostedField[]): boolean {
+  return fields.some((field) => {
+    const id = (field.id || "").toUpperCase().trim();
+    const fieldType = (field.type || "").toUpperCase().trim();
+    const fieldClass = (field.class || "").toUpperCase().trim();
+
+    if (SECURE_CARD_INPUT_IDS.has(id)) {
+      return true;
+    }
+
+    return fieldClass === "CARD_FIELD" || fieldType === "INPUT";
+  });
+}
+
+function isRenderableCardField(field: NexiHostedField): boolean {
+  if (!field.src) {
+    return false;
+  }
+  const id = (field.id || "").toUpperCase().trim();
+  const fieldType = (field.type || "").toUpperCase().trim();
+  const fieldClass = (field.class || "").toUpperCase().trim();
+  if (SECURE_CARD_INPUT_IDS.has(id)) {
+    return true;
+  }
+  if (id === "PRIVACY_CONDITIONS") {
+    return true;
+  }
+  return fieldClass === "CARD_FIELD" || fieldType === "INPUT";
+}
+
+function normalizeWorkflowState(state?: string): NexiWorkflowState | undefined {
+  if (!state) {
+    return undefined;
+  }
+  const normalized = state.trim().toUpperCase();
+  if (
+    normalized === "PAYMENT_METHOD_SELECTION" ||
+    normalized === "CARD_DATA_COLLECTION" ||
+    normalized === "READY_FOR_PAYMENT" ||
+    normalized === "REDIRECTED_TO_EXTERNAL_DOMAIN" ||
+    normalized === "GDI_VERIFICATION" ||
+    normalized === "PAYMENT_COMPLETE"
+  ) {
+    return normalized;
+  }
+  return undefined;
+}
+
+function waitForBuildGlobal(
+  timeoutMs = BUILD_GLOBAL_WAIT_TIMEOUT_MS
+): Promise<NexiBuildConstructor> {
+  const buildCtor = resolveBuildConstructor();
+  if (buildCtor) {
+    return Promise.resolve(buildCtor);
   }
 
   return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.id = scriptId;
-    script.src = src;
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
-    document.head.appendChild(script);
+    const startedAt = Date.now();
+
+    const check = () => {
+      const resolvedCtor = resolveBuildConstructor();
+      if (resolvedCtor) {
+        resolve(resolvedCtor);
+        return;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        reject(new Error("Nexi Build SDK global `Build` was not initialized."));
+        return;
+      }
+      window.setTimeout(check, BUILD_GLOBAL_POLL_INTERVAL_MS);
+    };
+
+    check();
   });
+}
+
+async function loadNexiBuildScript(
+  scriptId: string,
+  sources: string[]
+): Promise<NexiBuildConstructor> {
+  const availableCtor = resolveBuildConstructor();
+  if (availableCtor) {
+    return availableCtor;
+  }
+
+  const uniqueSources = sources
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((value, index, arr) => arr.indexOf(value) === index);
+  if (uniqueSources.length === 0) {
+    throw new Error("No Nexi SDK script source available.");
+  }
+
+  let lastError: Error | null = null;
+  for (const src of uniqueSources) {
+    try {
+      const existing = document.getElementById(
+        scriptId
+      ) as HTMLScriptElement | null;
+      if (existing) {
+        existing.remove();
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        const script = document.createElement("script");
+        script.id = scriptId;
+        script.src = src;
+        script.async = true;
+        script.crossOrigin = "anonymous";
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+        document.head.appendChild(script);
+      });
+
+      return await waitForBuildGlobal();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  throw lastError || new Error("Unable to load Nexi Build SDK script.");
 }
 
 function mapNexiOperationToInstrument(operation: NexiOperation): PaymentInstrument {
@@ -136,14 +379,21 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
   );
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [paymentMethodFields, setPaymentMethodFields] = useState<NexiHostedField[]>([]);
   const [cardFields, setCardFields] = useState<NexiHostedField[]>([]);
   const [sessionId, setSessionId] = useState<string>("");
   const [email, setEmail] = useState(defaultEmail || "");
   const [saveCardForFuture, setSaveCardForFuture] = useState(false);
+  const [isCardFieldsReady, setIsCardFieldsReady] = useState(false);
 
   const buildRef = useRef<NexiBuildInstance | null>(null);
   const hasMountedRef = useRef(false);
+  const preferredCardActionIdRef = useRef("PAY_WITH_CARD");
+  const autoCardSelectionTriggeredRef = useRef(false);
+  const autoCardSelectionAttemptsRef = useRef(0);
+  const cardFieldsReadyRef = useRef(false);
+  const confirmTimeoutRef = useRef<number | null>(null);
+  const finalizeInFlightRef = useRef(false);
+  const isMountedRef = useRef(true);
 
   const totalAmount = checkout.totals.find((t) => t.type === "total")?.amount ?? 0;
   const currency = checkout.currency || "EUR";
@@ -155,6 +405,179 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
       }).format(totalAmount / 100),
     [currency, totalAmount]
   );
+  const renderableCardFields = useMemo(
+    () => cardFields.filter(isRenderableCardField),
+    [cardFields]
+  );
+
+  const clearConfirmTimeout = () => {
+    if (confirmTimeoutRef.current !== null) {
+      window.clearTimeout(confirmTimeoutRef.current);
+      confirmTimeoutRef.current = null;
+    }
+  };
+
+  const applyCardFieldsState = (fields: NexiHostedField[]) => {
+    const nextFields = Array.isArray(fields) ? fields : [];
+    const ready = hasSecureCardInputFields(nextFields);
+    setCardFields(nextFields);
+    cardFieldsReadyRef.current = ready;
+    setIsCardFieldsReady(ready);
+  };
+
+  const finalizeSessionPayment = async (activeSessionId: string) => {
+    if (finalizeInFlightRef.current) {
+      return;
+    }
+    finalizeInFlightRef.current = true;
+    try {
+      const finalizeResponse = await fetch("/api/nexi/finalize-payment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: activeSessionId }),
+      });
+      const finalizePayload =
+        (await finalizeResponse.json()) as NexiFinalizeResponse & {
+          error?: string;
+          details?: unknown;
+        };
+
+      if (!finalizeResponse.ok) {
+        throw new Error(
+          formatNexiErrorMessage(
+            finalizePayload.error || "Nexi finalize_payment request failed.",
+            finalizePayload.details
+          )
+        );
+      }
+      clearConfirmTimeout();
+
+      if (
+        finalizePayload.state === "REDIRECTED_TO_EXTERNAL_DOMAIN" &&
+        finalizePayload.url
+      ) {
+        setStatusMessage("3DS authentication required. Opening Nexi challenge...");
+        window.open(finalizePayload.url, "_blank", "noopener,noreferrer");
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (finalizePayload.state === "PAYMENT_COMPLETE" && finalizePayload.operation) {
+        const instrument = mapNexiOperationToInstrument(finalizePayload.operation);
+        await onSubmit(instrument);
+        setIsSubmitting(false);
+        return;
+      }
+
+      throw new Error("Unexpected Nexi finalize state.");
+    } finally {
+      finalizeInFlightRef.current = false;
+    }
+  };
+
+  const pollBuildStateAfterConfirm = async (activeSessionId: string) => {
+    for (let attempt = 0; attempt < FINALIZE_POLL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const stateResponse = await fetch(
+          `/api/nexi/build-state?sessionId=${encodeURIComponent(activeSessionId)}`
+        );
+        const statePayload =
+          (await stateResponse.json()) as NexiBuildStateResponse & {
+            error?: string;
+            details?: unknown;
+          };
+
+        if (!stateResponse.ok) {
+          throw new Error(
+            formatNexiErrorMessage(
+              statePayload.error || "Nexi /build/state request failed.",
+              statePayload.details
+            )
+          );
+        }
+
+        const workflowState = normalizeWorkflowState(statePayload.state);
+        if (workflowState === "READY_FOR_PAYMENT") {
+          setStatusMessage("Card data confirmed. Finalizing payment...");
+          await finalizeSessionPayment(activeSessionId);
+          return;
+        }
+        if (workflowState === "PAYMENT_COMPLETE" && statePayload.operation) {
+          clearConfirmTimeout();
+          const instrument = mapNexiOperationToInstrument(statePayload.operation);
+          await onSubmit(instrument);
+          setIsSubmitting(false);
+          return;
+        }
+      } catch {
+        // Keep retrying for a short window, then surface the final timeout error.
+      }
+
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, FINALIZE_POLL_RETRY_DELAY_MS);
+      });
+    }
+
+    if (!isMountedRef.current) {
+      return;
+    }
+    setError("Nexi did not respond in time while confirming card data. Please retry.");
+    setIsSubmitting(false);
+    setStatusMessage("Insert card details in secure Nexi fields.");
+  };
+
+  const triggerCardSelection = (resetAttempts = false) => {
+    if (resetAttempts) {
+      autoCardSelectionAttemptsRef.current = 0;
+    }
+
+    const attempt = () => {
+      if (cardFieldsReadyRef.current) {
+        return;
+      }
+      const build = buildRef.current;
+      if (!build) {
+        return;
+      }
+
+      const actionId = preferredCardActionIdRef.current || "PAY_WITH_CARD";
+      try {
+        build.clickAction(actionId);
+      } catch {
+        // We'll retry a few times because Build frames can register asynchronously.
+      }
+
+      autoCardSelectionAttemptsRef.current += 1;
+      if (
+        !cardFieldsReadyRef.current &&
+        autoCardSelectionAttemptsRef.current < AUTO_SELECT_CARD_MAX_ATTEMPTS
+      ) {
+        window.setTimeout(attempt, AUTO_SELECT_CARD_DELAY_MS);
+      } else if (!cardFieldsReadyRef.current) {
+        window.setTimeout(() => {
+          if (!cardFieldsReadyRef.current) {
+            setError(
+              "Nexi secure card fields are not available in this browser session. Reload the page and retry."
+            );
+            setStatusMessage("Waiting for Nexi secure card fields...");
+          }
+        }, CARD_FIELDS_WAIT_TIMEOUT_MS);
+      }
+    };
+
+    attempt();
+  };
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (confirmTimeoutRef.current !== null) {
+        window.clearTimeout(confirmTimeoutRef.current);
+        confirmTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (hasMountedRef.current) {
@@ -165,6 +588,12 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
     async function initializeNexiBuild() {
       setIsLoading(true);
       setError(null);
+      applyCardFieldsState([]);
+      autoCardSelectionTriggeredRef.current = false;
+      autoCardSelectionAttemptsRef.current = 0;
+      preferredCardActionIdRef.current = "PAY_WITH_CARD";
+      finalizeInFlightRef.current = false;
+      clearConfirmTimeout();
       try {
         const createSessionResponse = await fetch("/api/nexi/build-session", {
           method: "POST",
@@ -183,13 +612,12 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
           };
 
         if (!createSessionResponse.ok) {
-          const details =
-            sessionPayload.details && typeof sessionPayload.details === "object"
-              ? ` ${JSON.stringify(sessionPayload.details)}`
-              : "";
           throw new Error(
-            (sessionPayload.error || "Unable to initialize Nexi payment session.") +
-              details
+            formatNexiErrorMessage(
+              sessionPayload.error ||
+                "Unable to initialize Nexi payment session.",
+              sessionPayload.details
+            )
           );
         }
 
@@ -200,111 +628,136 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
         const hfsdkUrl =
           sessionPayload.hfsdkUrl ||
           `${sessionPayload.nexiDomain || "https://xpaysandbox.nexigroup.com"}/monetaweb/resources/hfsdk.js`;
+        const proxyHfsdkUrl = `/api/nexi/hfsdk.js?source=${encodeURIComponent(
+          hfsdkUrl
+        )}`;
 
-        await loadScript(HFSDK_SCRIPT_ID, hfsdkUrl);
-
-        if (!window.Build) {
-          throw new Error("Nexi Build SDK is not available after script load.");
-        }
+        // Use only same-origin proxy to avoid browser/network blocks on direct third-party script.
+        const BuildCtor = await loadNexiBuildScript(HFSDK_SCRIPT_ID, [
+          proxyHfsdkUrl,
+        ]);
 
         setSessionId(sessionPayload.sessionId);
-        setPaymentMethodFields(
-          (sessionPayload.fields || []).filter(
-            (field) => field.class === "CARD" || field.id === "PAY_WITH_CARD"
-          )
+        const cardActionFields = (sessionPayload.fields || []).filter(
+          (field) => field.class === "CARD" || field.id === "PAY_WITH_CARD"
         );
+        const firstCardAction = cardActionFields.find(
+          (field) => typeof field.id === "string" && field.id.trim().length > 0
+        );
+        if (firstCardAction?.id) {
+          preferredCardActionIdRef.current = firstCardAction.id;
+        }
+        const fallbackWarning = (sessionPayload.warnings || []).find(
+          (warning) => warning.code === "UCP_FALLBACK_TEST_KEY"
+        );
+        if (fallbackWarning?.description) {
+          setStatusMessage(fallbackWarning.description);
+        }
 
-        buildRef.current = new window.Build({
-          onBuildSuccess: () => {
+        const handleWorkflowStateChange = async (
+          evtData: NexiBuildFlowEvent,
+          stateRaw?: string
+        ) => {
+          const state = normalizeWorkflowState(stateRaw);
+          if (!state) {
+            return;
+          }
+
+          const activeSessionId = evtData?.sessionId || sessionPayload.sessionId;
+          if (state === "PAYMENT_METHOD_SELECTION") {
+            setStatusMessage("Opening Nexi secure card fields...");
+            applyCardFieldsState([]);
+            const stateFieldSet = evtData?.fieldSet?.fields || [];
+            const preferredField = stateFieldSet.find(
+              (field) =>
+                field &&
+                (field.id === "PAY_WITH_CARD" || field.class === "CARD")
+            );
+            if (preferredField?.id) {
+              preferredCardActionIdRef.current = preferredField.id;
+            }
+            autoCardSelectionTriggeredRef.current = true;
+            triggerCardSelection(true);
+            return;
+          }
+
+          if (state === "CARD_DATA_COLLECTION") {
+            const stateFields = evtData?.fieldSet?.fields || [];
+            applyCardFieldsState(stateFields);
+            if (hasSecureCardInputFields(stateFields)) {
+              setStatusMessage("Insert card details in secure Nexi fields.");
+            } else {
+              setStatusMessage("Select card and continue with Nexi secure fields.");
+            }
+            setIsSubmitting(false);
+            return;
+          }
+
+          if (state === "READY_FOR_PAYMENT") {
+            setStatusMessage("Card data confirmed. Finalizing payment...");
+            try {
+              await finalizeSessionPayment(activeSessionId);
+            } catch (finalizeError) {
+              clearConfirmTimeout();
+              setError(
+                finalizeError instanceof Error
+                  ? finalizeError.message
+                  : "Unable to finalize Nexi payment."
+              );
+              setIsSubmitting(false);
+            }
+            return;
+          }
+
+          if (state === "PAYMENT_COMPLETE" && evtData?.operation) {
+            clearConfirmTimeout();
+            const instrument = mapNexiOperationToInstrument(evtData.operation);
+            await onSubmit(instrument);
+            setIsSubmitting(false);
+          }
+        };
+
+        buildRef.current = new BuildCtor({
+          onBuildSuccess: (evtData, state) => {
             setError(null);
+            if (state) {
+              void handleWorkflowStateChange(evtData, state);
+            }
           },
           onBuildError: (evtData) => {
+            clearConfirmTimeout();
             const code = evtData?.errorCode ? ` (${evtData.errorCode})` : "";
             setError(`Nexi validation error${code}.`);
             setIsSubmitting(false);
           },
           onConfirmError: (evtData) => {
+            clearConfirmTimeout();
             const code = evtData?.errorCode ? ` (${evtData.errorCode})` : "";
             setError(`Nexi confirm error${code}.`);
             setIsSubmitting(false);
           },
-          onBuildFlowStateChange: async (evtData, state) => {
-            if (state === "CARD_DATA_COLLECTION") {
-              setStatusMessage("Insert card details in secure Nexi fields.");
-              setCardFields(evtData?.fieldSet?.fields || []);
-              setIsSubmitting(false);
+          onAllFieldsLoaded: () => {
+            if (autoCardSelectionTriggeredRef.current) {
               return;
             }
-
-            if (state === "READY_FOR_PAYMENT") {
-              setStatusMessage("Card data confirmed. Finalizing payment...");
-              try {
-                const finalizeResponse = await fetch(
-                  "/api/nexi/finalize-payment",
-                  {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ sessionId: evtData?.sessionId || sessionPayload.sessionId }),
-                  }
-                );
-                const finalizePayload =
-                  (await finalizeResponse.json()) as NexiFinalizeResponse & {
-                    error?: string;
-                    details?: unknown;
-                  };
-
-                if (!finalizeResponse.ok) {
-                  throw new Error(
-                    finalizePayload.error ||
-                      "Nexi finalize_payment request failed."
-                  );
-                }
-
-                if (
-                  finalizePayload.state === "REDIRECTED_TO_EXTERNAL_DOMAIN" &&
-                  finalizePayload.url
-                ) {
-                  setStatusMessage(
-                    "3DS authentication required. Opening Nexi challenge..."
-                  );
-                  window.open(finalizePayload.url, "_blank", "noopener,noreferrer");
-                  setIsSubmitting(false);
-                  return;
-                }
-
-                if (
-                  finalizePayload.state === "PAYMENT_COMPLETE" &&
-                  finalizePayload.operation
-                ) {
-                  const instrument = mapNexiOperationToInstrument(
-                    finalizePayload.operation
-                  );
-                  await onSubmit(instrument);
-                  setIsSubmitting(false);
-                  return;
-                }
-
-                throw new Error("Unexpected Nexi finalize state.");
-              } catch (finalizeError) {
-                setError(
-                  finalizeError instanceof Error
-                    ? finalizeError.message
-                    : "Unable to finalize Nexi payment."
-                );
-                setIsSubmitting(false);
-              }
-              return;
-            }
-
-            if (state === "PAYMENT_COMPLETE" && evtData?.operation) {
-              const instrument = mapNexiOperationToInstrument(evtData.operation);
-              await onSubmit(instrument);
-              setIsSubmitting(false);
-            }
+            autoCardSelectionTriggeredRef.current = true;
+            setStatusMessage("Opening Nexi secure card fields...");
+            window.setTimeout(() => {
+              triggerCardSelection(true);
+            }, AUTO_SELECT_CARD_DELAY_MS);
+          },
+          onComponentUnavailable: (evtData) => {
+            const code = evtData?.errorCode ? ` (${evtData.errorCode})` : "";
+            setError(
+              `Nexi component temporarily unavailable${code}. Check third-party cookies and retry.`
+            );
+          },
+          onBuildFlowStateChange: (evtData, state) => {
+            void handleWorkflowStateChange(evtData, state);
           },
         });
 
-        setStatusMessage("Select card and continue with Nexi secure fields.");
+        setStatusMessage("Opening Nexi secure card fields...");
       } catch (setupError) {
         setError(
           setupError instanceof Error
@@ -321,16 +774,34 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
 
   const handleConfirmPayment = () => {
     setError(null);
+    if (!isCardFieldsReady || !hasSecureCardInputFields(cardFields)) {
+      setStatusMessage("Waiting for Nexi secure card fields...");
+      setError(
+        "Secure card fields are not ready yet. Wait a moment and try again."
+      );
+      setIsSubmitting(false);
+      return;
+    }
     setIsSubmitting(true);
     setStatusMessage("Confirming card data with Nexi...");
     try {
       if (!buildRef.current) {
         throw new Error("Nexi Build SDK not initialized.");
       }
+      if (!sessionId) {
+        throw new Error("Nexi session is not ready yet.");
+      }
+      clearConfirmTimeout();
+      const activeSessionId = sessionId;
+      confirmTimeoutRef.current = window.setTimeout(() => {
+        confirmTimeoutRef.current = null;
+        void pollBuildStateAfterConfirm(activeSessionId);
+      }, CONFIRM_PAYMENT_TIMEOUT_MS);
       buildRef.current.confirmData(() => {
         setIsSubmitting(true);
       });
     } catch (confirmError) {
+      clearConfirmTimeout();
       setError(
         confirmError instanceof Error
           ? confirmError.message
@@ -375,31 +846,13 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
           />
         </div>
 
-        {paymentMethodFields.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Select payment method
-            </p>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {paymentMethodFields.map((field, index) => (
-                <iframe
-                  key={`${field.id || "method"}-${index}`}
-                  src={field.src}
-                  title={field.id || `Nexi Method ${index + 1}`}
-                  className="h-14 w-full rounded-md border border-slate-200"
-                />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {cardFields.length > 0 && (
+        {renderableCardFields.length > 0 && (
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Card details (secure Nexi iframes)
             </p>
             <div className="grid gap-2 md:grid-cols-2">
-              {cardFields.map((field, index) => (
+              {renderableCardFields.map((field, index) => (
                 <iframe
                   key={`${field.id || "card"}-${index}`}
                   src={field.src}
@@ -434,7 +887,7 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
           <button
             type="button"
             onClick={handleConfirmPayment}
-            disabled={isLoading || isSubmitting}
+            disabled={isLoading || isSubmitting || !isCardFieldsReady}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-wait disabled:bg-blue-400"
           >
             {isLoading
