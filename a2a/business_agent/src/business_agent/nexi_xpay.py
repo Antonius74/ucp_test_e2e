@@ -458,6 +458,44 @@ async def get_build_state(*, session_id: str) -> dict[str, object]:
     return data
 
 
+async def get_order(*, order_id: str) -> dict[str, object]:
+    """Read the Back Office order status (GET /orders/{orderId}).
+
+    Used to resolve the outcome of a payment after a 3D Secure redirect
+    (e.g. Google Pay), where the result is delivered to resultUrl/notificationUrl
+    and the order can then be queried by orderId. The response carries an
+    'operation' object whose 'operationResult' is one of THREEDS_VALIDATED,
+    THREEDS_FAILED, DENIED_BY_RISK, etc.
+    """
+    config = load_nexi_config()
+    endpoint = f"{config.api_base}/orders/{order_id}"
+
+    async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+        response = await client.get(
+            endpoint,
+            headers=_build_headers(config.api_key),
+        )
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"raw_response": response.text}
+
+    if response.status_code >= 400:
+        if isinstance(data, dict):
+            data["upstreamCid"] = response.headers.get("cid")
+        raise NexiUpstreamError(response.status_code, data)
+
+    if not isinstance(data, dict):
+        raise NexiUpstreamError(
+            502,
+            {"error": "Unexpected Nexi response shape."},
+        )
+
+    data["upstreamCid"] = response.headers.get("cid")
+    return data
+
+
 async def process_googlepay_order(
     *,
     checkout_id: str,

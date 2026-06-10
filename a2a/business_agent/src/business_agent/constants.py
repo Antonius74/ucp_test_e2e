@@ -34,3 +34,6 @@ UCP_PURCHASE_RESERVATIONS_KEY = "a2a.purchase_reservations"
 UCP_PAYMENT_DATA_KEY = "a2a.ucp.checkout.payment_data"
 UCP_RISK_SIGNALS_KEY = "a2a.ucp.checkout.risk_signals"
 UCP_PROTOCOL_TRACE_KEY = "a2a.protocol_trace"
+# Pausa 3D Secure (Opzione C): porta al client lo stato "requires_action" e
+# l'URL del challenge ACS; il resume rientra come complete_checkout #2.
+UCP_AUTH_REQUIRED_KEY = "a2a.ucp.checkout.auth_required"

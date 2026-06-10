@@ -752,7 +752,13 @@ async def run(host, port):
             Route("/orders", orders_page),
             Route("/orders/{order_id}", order_page),
             Route("/reservations", reservations_page),
+            # /nexi/build-session e /nexi/hfsdk.js restano: servono alla
+            # raccolta dati carta (hosted fields) sul dominio merchant.
             Route("/nexi/build-session", nexi_build_session, methods=["POST"]),
+            # SUPERATE (Fase 7-8): l'autorizzazione Nexi (finalize / build-state /
+            # googlepay) e' migrata nei gateway dentro la cascata A2A. Queste
+            # route non sono piu' chiamate dal frontend; mantenute solo per
+            # compatibilita'/debug e rimovibili una volta dismesse.
             Route(
                 "/nexi/finalize-payment",
                 nexi_finalize_payment,

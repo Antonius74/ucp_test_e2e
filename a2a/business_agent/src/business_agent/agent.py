@@ -36,6 +36,7 @@ from .constants import (
     ADK_PAYMENT_STATE,
     ADK_UCP_METADATA_STATE,
     ADK_USER_CHECKOUT_ID,
+    UCP_AUTH_REQUIRED_KEY,
     UCP_CHECKOUT_KEY,
     UCP_PURCHASE_RESERVATION_KEY,
     UCP_PURCHASE_RESERVATIONS_KEY,
@@ -475,6 +476,27 @@ async def complete_checkout(tool_context: ToolContext) -> dict:
             return {
                 UCP_CHECKOUT_KEY: response.model_dump(mode="json"),
                 "status": "success",
+            }
+        elif task.status is not None and task.status.state == TaskState.auth_required:
+            # 3D Secure (Opzione C): pausa, niente place_order. Si porta al
+            # client lo stato requires_action + l'URL del challenge ACS.
+            merchant_result = (getattr(mpp, "last_exchange", None) or {}).get(
+                "merchant_result", {}
+            )
+            redirect_url = (
+                merchant_result.get("redirect_url")
+                if isinstance(merchant_result, dict)
+                else None
+            )
+            checkout = store.mark_complete_in_progress(checkout_id)
+            return {
+                UCP_CHECKOUT_KEY: checkout.model_dump(mode="json"),
+                UCP_AUTH_REQUIRED_KEY: {
+                    "status": "requires_action",
+                    "redirect_url": redirect_url,
+                    "message": get_message_text(task.status.message),  # type: ignore
+                },
+                "status": "requires_action",
             }
         else:
             return _create_error_response(

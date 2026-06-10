@@ -104,13 +104,22 @@ class MockPaymentProcessor:
 
         status_value = merchant_result.get("status")
         message = str(merchant_result.get("message", "Payment failed."))
-        is_approved = status_value == "approved"
+
+        # Mapping esito merchant -> TaskState A2A.
+        # "requires_action" (3D Secure, Opzione C) usa auth_required: non e' un
+        # fallimento, ma una pausa che il client risolve e poi riprende.
+        if status_value == "approved":
+            state = TaskState.completed
+        elif status_value == "requires_action":
+            state = TaskState.auth_required
+        else:
+            state = TaskState.failed
 
         return Task(
             context_id=str(uuid4()),
             id=str(uuid4()),
             status=TaskStatus(
-                state=TaskState.completed if is_approved else TaskState.failed,
+                state=state,
                 message=new_agent_text_message(message),
             ),
         )

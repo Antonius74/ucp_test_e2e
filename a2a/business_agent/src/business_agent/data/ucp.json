@@ -40,6 +40,37 @@
         "config": {
           "business_id": "1234567890"
         }
+      },
+      {
+        "id": "nexi_card",
+        "name": "nexi.xpay.build.card",
+        "version": "2026-01-11",
+        "spec": "https://developer.nexi.it/it/modalita-di-integrazione/xpay-build/build-versione-3",
+        "config_schema": "https://ucp.dev/schemas/shopping/types/payment_handler_config.json",
+        "instrument_schemas": [
+          "https://ucp.dev/schemas/shopping/types/card_payment_instrument.json"
+        ],
+        "config": {
+          "provider": "nexi.xpay.build.v3",
+          "method": "card",
+          "environment": "TEST"
+        }
+      },
+      {
+        "id": "nexi_googlepay",
+        "name": "nexi.xpay.build.googlepay",
+        "version": "2026-01-11",
+        "spec": "https://developer.nexi.it/it/api/post-orders-googlepay",
+        "config_schema": "https://ucp.dev/schemas/shopping/types/payment_handler_config.json",
+        "instrument_schemas": [
+          "https://ucp.dev/schemas/shopping/types/card_payment_instrument.json"
+        ],
+        "config": {
+          "provider": "nexi.xpay.build.v3",
+          "method": "googlepay",
+          "wallet_provider": "google_pay",
+          "environment": "TEST"
+        }
       }
     ]
   }

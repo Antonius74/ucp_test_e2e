@@ -392,6 +392,19 @@ class RetailStore:
         """
         return self._checkouts.get(checkout_id)
 
+    def mark_complete_in_progress(self, checkout_id: str) -> Checkout:
+        """Mark a checkout as awaiting an out-of-band step (e.g. 3D Secure).
+
+        Lo status "complete_in_progress" e' l'unico valore del Literal UCP che
+        rappresenta un pagamento in corso ma non ancora concluso: viene usato
+        durante la pausa 3DS, prima del resume (complete_checkout #2).
+        """
+        checkout = self.get_checkout(checkout_id)
+        if checkout is None:
+            raise ValueError(f"Checkout with ID {checkout_id} not found")
+        checkout.status = "complete_in_progress"
+        return checkout
+
     def remove_from_checkout(self, checkout_id: str, product_id: str) -> Checkout:
         """Remove a product from the checkout.
 

@@ -44,6 +44,7 @@ from .constants import (
     ADK_PAYMENT_STATE,
     ADK_UCP_METADATA_STATE,
     UCP_AGENT_HEADER,
+    UCP_AUTH_REQUIRED_KEY,
     UCP_PAYMENT_DATA_KEY,
     UCP_PROTOCOL_TRACE_KEY,
     UCP_RISK_SIGNALS_KEY,
@@ -1103,6 +1104,44 @@ class ADKAgentExecutor(AgentExecutor):
                     task_state=task.status.state if task.status else None,
                     merchant_exchange=getattr(mpp, "last_exchange", None),
                 )
+                if (
+                    task.status is not None
+                    and task.status.state == TaskState.auth_required
+                ):
+                    # 3D Secure (Opzione C): pausa, niente place_order.
+                    merchant_exchange = getattr(mpp, "last_exchange", None)
+                    mr = (
+                        merchant_exchange.get("merchant_result")
+                        if isinstance(merchant_exchange, dict)
+                        else None
+                    )
+                    redirect_url = (
+                        mr.get("redirect_url") if isinstance(mr, dict) else None
+                    )
+                    auth_message = (
+                        get_message_text(task.status.message)  # type: ignore
+                        or "Authentication required."
+                    )
+                    self._append_trace(
+                        trace_events,
+                        "a2a.fast_path.action.complete_checkout.requires_action",
+                        redirect_url=redirect_url,
+                        merchant_exchange=merchant_exchange,
+                    )
+                    return [
+                        Part(
+                            root=DataPart(
+                                data={
+                                    UCP_AUTH_REQUIRED_KEY: {
+                                        "status": "requires_action",
+                                        "redirect_url": redirect_url,
+                                        "message": auth_message,
+                                    }
+                                }
+                            )
+                        )
+                    ]
+
                 if task.status is None or task.status.state != TaskState.completed:
                     message = get_message_text(task.status.message)  # type: ignore
                     self._append_trace(

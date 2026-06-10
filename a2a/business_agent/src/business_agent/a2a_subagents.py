@@ -491,7 +491,9 @@ class ShopAgentA2A:
             checkout = self.store.get_checkout(checkout_id)
             if checkout is None:
                 return {"message": "Checkout not found.", "status": "error"}
-            if checkout.status != "ready_for_complete":
+            # "complete_in_progress" e' lo stato della pausa 3DS: il resume
+            # (complete_checkout #2) deve poter piazzare l'ordine.
+            if checkout.status not in ("ready_for_complete", "complete_in_progress"):
                 return {
                     "message": (
                         "Checkout is not ready. Please provide buyer details "
@@ -530,7 +532,16 @@ class MerchantAgentA2A:
     """A2A Merchant Agent that validates and authorizes token payments."""
 
     def __init__(self):
-        self._gateway = MockUcpPaymentGateway()
+        # Registry handler_id -> gateway. Ogni handler dichiarato in
+        # data/ucp.json e' realizzato server-side da un gateway che ne accetta
+        # i propri credential.type.
+        from .nexi_gateway import NexiCardGateway, NexiGooglePayGateway
+
+        self._gateways: dict[str, Any] = {
+            "example_payment_provider": MockUcpPaymentGateway(),
+            "nexi_card": NexiCardGateway(),
+            "nexi_googlepay": NexiGooglePayGateway(),
+        }
 
     def handle_jsonrpc(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_id, context_id, parts, _ = _extract_message_and_parts(payload)
@@ -585,15 +596,6 @@ class MerchantAgentA2A:
                 "reason": "missing_credential",
             }
 
-        token_type = credential.get("type")
-        token_value = credential.get("token")
-        if token_type != "token" or not isinstance(token_value, str) or not token_value:
-            return {
-                "status": "declined",
-                "message": "Invalid payment token format.",
-                "reason": "invalid_token_format",
-            }
-
         handler_id = payment_data_dict.get("handler_id")
         if not isinstance(handler_id, str) or not handler_id:
             return {
@@ -602,7 +604,9 @@ class MerchantAgentA2A:
                 "reason": "missing_handler_id",
             }
 
-        if handler_id != "example_payment_provider":
+        # Risoluzione del gateway dietro l'handler dichiarato (UCP).
+        gateway = self._gateways.get(handler_id)
+        if gateway is None:
             return {
                 "status": "declined",
                 "message": "Unsupported payment handler for this merchant.",
@@ -610,10 +614,46 @@ class MerchantAgentA2A:
                 "handler_id": handler_id,
             }
 
+        # Guard credential.type PER-HANDLER: ogni gateway dichiara i tipi di
+        # credenziale che accetta (es. mock -> "token", nexi_card ->
+        # "nexi_build_operation"). Cosi' gli instrument reali Nexi non vengono
+        # piu' respinti come "invalid_token_format".
+        token_type = credential.get("type")
+        token_value = credential.get("token")
+        accepted_types = getattr(gateway, "accepted_credential_types", {"token"})
+        if (
+            token_type not in accepted_types
+            or not isinstance(token_value, str)
+            or not token_value
+        ):
+            return {
+                "status": "declined",
+                "message": "Invalid payment token format.",
+                "reason": "invalid_token_format",
+                "handler_id": handler_id,
+            }
+
         risk_signals = params.get("risk_signals")
-        gateway_result = self._gateway.authorize_token(
-            payment_data_dict, risk_signals
-        )
+        gateway_result = gateway.authorize_token(payment_data_dict, risk_signals)
+
+        # 3D Secure (Opzione C): il gateway chiede un'azione utente. Stato
+        # distinto da "declined"; l'esito risale al client con l'URL del
+        # challenge. Il resume (#2) rientra come complete_checkout sullo stesso
+        # contextId/taskId. (Consumo lato executor/frontend: Fase 6-7.)
+        if gateway_result["status"] == "requires_action":
+            return {
+                "status": "requires_action",
+                "message": gateway_result.get("message", "Authentication required."),
+                "reason": gateway_result.get("reason", "auth_required"),
+                "handler_id": handler_id,
+                "redirect_url": gateway_result.get("redirect_url"),
+                "gateway": gateway_result,
+                "ucp_integration": {
+                    "protocol": "UCP",
+                    "merchant_agent": "mock.ucp.merchant.agent",
+                    "payment_gateway": gateway_result["provider"],
+                },
+            }
 
         if gateway_result["status"] != "approved":
             return {
@@ -650,6 +690,8 @@ class MockUcpPaymentGateway:
     """Mock UCP-compatible payment gateway used by MerchantAgentA2A."""
 
     provider = "mock.ucp.gateway"
+    # credential.type accettati da questo gateway (guard per-handler).
+    accepted_credential_types = frozenset({"token"})
 
     def authorize_token(
         self,

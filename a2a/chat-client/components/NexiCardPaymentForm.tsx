@@ -364,26 +364,37 @@ async function loadNexiBuildScript(
   throw lastError || new Error("Unable to load Nexi Build SDK script.");
 }
 
-function mapNexiOperationToInstrument(operation: NexiOperation): PaymentInstrument {
-  const operationId = operation.operationId || crypto.randomUUID();
-  const paymentCircuitRaw = (operation.paymentCircuit || "CARD").toLowerCase();
+// Fase 7: l'instrument carta porta il sessionId Nexi reale e l'handler
+// "nexi_card"; l'autorizzazione (finalize_payment / build/state) avviene poi
+// nella cascata, nel NexiCardGateway. Niente finalize lato client.
+// `resume=true` quando la confirmData ha gia' restituito PAYMENT_COMPLETE:
+// il gateway si limita a rileggere lo stato invece di rilanciare il finalize.
+function buildNexiCardInstrument(
+  sessionId: string,
+  resume: boolean,
+  operation?: NexiOperation
+): PaymentInstrument {
+  const paymentCircuitRaw = (operation?.paymentCircuit || "CARD").toLowerCase();
   const paymentCircuit = paymentCircuitRaw.replace(/[^a-z0-9]+/g, "_") || "card";
-  const maskedInfo = operation.paymentInstrumentInfo || "****0000";
+  const maskedInfo = operation?.paymentInstrumentInfo || "****0000";
   const last4Match = maskedInfo.match(/(\d{4})$/);
   const last_digits = last4Match ? last4Match[1] : "0000";
 
   return {
-    id: `nexi_build_${operationId}`,
+    id: `nexi_card_${sessionId}`,
     type: "card",
     brand: paymentCircuit,
     last_digits,
     expiry_month: 12,
     expiry_year: new Date().getFullYear() + 2,
-    handler_id: "example_payment_provider",
-    handler_name: "example.payment.provider",
+    handler_id: "nexi_card",
+    handler_name: "nexi.xpay.build.card",
     credential: {
       type: "nexi_build_operation",
-      token: `nexi_build_${operationId}`,
+      // token non vuoto richiesto dal Merchant; il gateway usa session_id.
+      token: sessionId,
+      session_id: sessionId,
+      resume,
     },
   };
 }
@@ -447,51 +458,19 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
     setIsCardFieldsReady(ready);
   };
 
+  // Fase 7: niente finalize lato client. Quando la sessione e' pronta
+  // (READY_FOR_PAYMENT) si invia l'instrument con il sessionId: il finalize e
+  // l'eventuale 3DS sono gestiti dal NexiCardGateway dentro la cascata.
   const finalizeSessionPayment = async (activeSessionId: string) => {
     if (finalizeInFlightRef.current) {
       return;
     }
     finalizeInFlightRef.current = true;
     try {
-      const finalizeResponse = await fetch("/api/nexi/finalize-payment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: activeSessionId }),
-      });
-      const finalizePayload =
-        (await finalizeResponse.json()) as NexiFinalizeResponse & {
-          error?: string;
-          details?: unknown;
-        };
-
-      if (!finalizeResponse.ok) {
-        throw new Error(
-          formatNexiErrorMessage(
-            finalizePayload.error || "Nexi finalize_payment request failed.",
-            finalizePayload.details
-          )
-        );
-      }
       clearConfirmTimeout();
-
-      if (
-        finalizePayload.state === "REDIRECTED_TO_EXTERNAL_DOMAIN" &&
-        finalizePayload.url
-      ) {
-        setStatusMessage("3DS authentication required. Opening Nexi challenge...");
-        window.open(finalizePayload.url, "_blank", "noopener,noreferrer");
-        setIsSubmitting(false);
-        return;
-      }
-
-      if (finalizePayload.state === "PAYMENT_COMPLETE" && finalizePayload.operation) {
-        const instrument = mapNexiOperationToInstrument(finalizePayload.operation);
-        await onSubmit(instrument);
-        setIsSubmitting(false);
-        return;
-      }
-
-      throw new Error("Unexpected Nexi finalize state.");
+      setStatusMessage("Card data confirmed. Completing payment...");
+      await onSubmit(buildNexiCardInstrument(activeSessionId, false));
+      setIsSubmitting(false);
     } finally {
       finalizeInFlightRef.current = false;
     }
@@ -526,8 +505,9 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
         }
         if (workflowState === "PAYMENT_COMPLETE" && statePayload.operation) {
           clearConfirmTimeout();
-          const instrument = mapNexiOperationToInstrument(statePayload.operation);
-          await onSubmit(instrument);
+          await onSubmit(
+            buildNexiCardInstrument(activeSessionId, true, statePayload.operation)
+          );
           setIsSubmitting(false);
           return;
         }
@@ -792,8 +772,9 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
           const operation = evtData?.operation || evtData?.data?.operation;
           if (state === "PAYMENT_COMPLETE" && operation) {
             clearConfirmTimeout();
-            const instrument = mapNexiOperationToInstrument(operation);
-            await onSubmit(instrument);
+            // confirmData ha gia' completato in un solo step: resume=true, il
+            // gateway si limita a rileggere lo stato della sessione.
+            await onSubmit(buildNexiCardInstrument(activeSessionId, true, operation));
             setIsSubmitting(false);
           }
         };

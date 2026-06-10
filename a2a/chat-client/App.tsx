@@ -267,42 +267,41 @@ function deriveNameFromEmail(email: string): {
   };
 }
 
-function createGooglePayInstrumentFromNexiResponse(
-  responsePayload: Record<string, unknown>
+// Fase 7: l'instrument Google Pay porta il token wallet REALE e il contesto
+// d'ordine; l'autorizzazione Nexi (process_googlepay_order) avviene poi dentro
+// la cascata, nel NexiGooglePayGateway. Niente piu' chiamata laterale a
+// /api/nexi/googlepay-order ne' handler_id falsificato.
+function createGooglePayInstrument(
+  checkout: Checkout,
+  payload: GooglePayTokenizedCard,
+  email: string
 ): PaymentInstrument {
-  const operation =
-    responsePayload.operation && typeof responsePayload.operation === "object"
-      ? (responsePayload.operation as Record<string, unknown>)
-      : {};
-  const operationId =
-    typeof operation.operationId === "string" && operation.operationId
-      ? operation.operationId
-      : crypto.randomUUID();
-  const circuitRaw =
-    typeof operation.paymentCircuit === "string" && operation.paymentCircuit
-      ? operation.paymentCircuit
-      : "card";
-  const maskedInstrument =
-    typeof operation.paymentInstrumentInfo === "string"
-      ? operation.paymentInstrumentInfo
-      : "";
-  const lastDigitsMatch = maskedInstrument.match(/(\d{4})$/);
-  const lastDigits = lastDigitsMatch ? lastDigitsMatch[1] : "0000";
-
+  const totalAmount =
+    checkout.totals.find((total) => total.type === "total")?.amount || 0;
+  const ref = crypto.randomUUID();
   return {
-    id: `nexi_gpay_${operationId}`,
+    id: `nexi_gpay_${ref}`,
     type: "card",
-    brand: circuitRaw.toLowerCase(),
-    last_digits: lastDigits,
+    brand: "card",
+    last_digits: "0000",
     expiry_month: 12,
     expiry_year: new Date().getFullYear() + 2,
     wallet_provider: "google_pay",
-    display_label: `Google Pay •••• ${lastDigits}`,
-    handler_id: "example_payment_provider",
-    handler_name: "example.payment.provider",
+    display_label: "Google Pay",
+    handler_id: "nexi_googlepay",
+    handler_name: "nexi.xpay.build.googlepay",
     credential: {
       type: "nexi_googlepay_operation",
-      token: `nexi_googlepay_${operationId}`,
+      // token non vuoto richiesto dal Merchant; per il resume diventa order_id.
+      token: checkout.id,
+      order_context: {
+        checkout_id: checkout.id,
+        amount_cents: totalAmount,
+        currency: checkout.currency || "EUR",
+        buyer_email: email,
+        description: `Checkout ${checkout.id}`,
+      },
+      googlepay_payment_data: payload,
     },
   };
 }
@@ -333,6 +332,11 @@ function App() {
     []
   );
   const [isProtocolDashboardOpen, setIsProtocolDashboardOpen] = useState(true);
+  // Pausa 3D Secure (Opzione C): instrument da reinviare come complete_checkout #2
+  // dopo che l'utente ha completato il challenge sull'ACS.
+  const [pendingResume3DS, setPendingResume3DS] =
+    useState<PaymentInstrument | null>(null);
+  const lastPaymentInstrumentRef = useRef<PaymentInstrument | null>(null);
   const credentialProvider = useRef(new CredentialProviderProxy());
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -714,70 +718,13 @@ function App() {
         email: payload.email || resolvedEmail,
       };
 
-      const response = await fetch("/api/nexi/googlepay-order", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          checkoutId: checkout.id,
-          amount: totalAmount,
-          currency: checkout.currency || "EUR",
-          buyerEmail: resolvedEmail,
-          description: `Checkout ${checkout.id}`,
-          googlePayPaymentData: googlePayPayload,
-        }),
-      });
-      const responsePayload = (await response.json()) as
-        | Record<string, unknown>
-        | { error?: string; details?: unknown };
-
-      if (!response.ok) {
-        const message =
-          responsePayload &&
-          typeof responsePayload === "object" &&
-          "error" in responsePayload &&
-          typeof responsePayload.error === "string"
-            ? responsePayload.error
-            : "Nexi Google Pay request failed.";
-        const details =
-          responsePayload &&
-          typeof responsePayload === "object" &&
-          "details" in responsePayload
-            ? formatNexiErrorDetails(
-                (responsePayload as { details?: unknown }).details
-              )
-            : "";
-        throw new Error(details ? `${message} ${details}` : message);
-      }
-
-      const nexiPayload = responsePayload as Record<string, unknown>;
-      const state =
-        typeof nexiPayload.state === "string" ? nexiPayload.state : "";
-      const redirectUrl =
-        typeof nexiPayload.url === "string" ? nexiPayload.url : "";
-      if (state === "REDIRECTED_TO_EXTERNAL_DOMAIN" && redirectUrl) {
-        window.open(redirectUrl, "_blank", "noopener,noreferrer");
-        setMessages((prev) => [
-          ...prev,
-          createChatMessage(
-            Sender.MODEL,
-            "3DS challenge opened in a new tab. Complete authentication and then continue."
-          ),
-        ]);
-        return;
-      }
-
-      if (
-        !("operation" in nexiPayload) ||
-        !nexiPayload.operation ||
-        typeof nexiPayload.operation !== "object"
-      ) {
-        throw new Error("Nexi did not return an operation payload.");
-      }
-
-      const paymentInstrument = createGooglePayInstrumentFromNexiResponse(
-        nexiPayload
+      // Fase 7: nessuna autorizzazione laterale. Si costruisce l'instrument UCP
+      // con il token wallet reale e si invia complete_checkout: la cascata A2A
+      // (NexiGooglePayGateway) autorizza ed eventualmente richiede il 3DS.
+      const paymentInstrument = createGooglePayInstrument(
+        checkout,
+        googlePayPayload,
+        resolvedEmail
       );
       await handleConfirmPayment(paymentInstrument);
     } catch (error) {
@@ -804,6 +751,8 @@ function App() {
   };
 
   const handleConfirmPayment = async (paymentInstrument: PaymentInstrument) => {
+    // Ricorda l'instrument per un eventuale resume 3DS (complete_checkout #2).
+    lastPaymentInstrumentRef.current = paymentInstrument;
     // Hide the payment confirmation component
     const userActionMessage = createChatMessage(
       Sender.USER,
@@ -847,6 +796,15 @@ function App() {
       setMessages((prev) => [...prev.slice(0, -1), errorMessage]); // This assumes handleSendMessage added a loader
       setIsLoading(false); // Ensure loading is stopped on authorization error
     }
+  };
+
+  // Resume 3D Secure (complete_checkout #2): reinvia lo stesso instrument con
+  // credential.resume=true; la cascata interroga Nexi per l'esito definitivo.
+  const handleResume3DS = async () => {
+    const resumeInstrument = pendingResume3DS;
+    if (!resumeInstrument) return;
+    setPendingResume3DS(null);
+    await handleConfirmPayment(resumeInstrument);
   };
 
   const handleSubmitCardPayment = async (instrument: PaymentInstrument) => {
@@ -1078,6 +1036,28 @@ function App() {
           // Checkout
           combinedBotMessage.checkout = dataPayload["a2a.ucp.checkout"] as Checkout;
         }
+
+        // 3D Secure (Opzione C): la cascata chiede l'autenticazione utente.
+        const authRequired = dataPayload?.["a2a.ucp.checkout.auth_required"] as
+          | { redirect_url?: string | null; message?: string }
+          | undefined;
+        if (authRequired && typeof authRequired === "object") {
+          combinedBotMessage.authRequired = {
+            redirectUrl: authRequired.redirect_url ?? null,
+            message: authRequired.message,
+          };
+          // Apre il challenge ACS e arma il resume (#2) con lo stesso instrument.
+          if (authRequired.redirect_url) {
+            window.open(authRequired.redirect_url, "_blank", "noopener,noreferrer");
+          }
+          const base = lastPaymentInstrumentRef.current;
+          if (base) {
+            setPendingResume3DS({
+              ...base,
+              credential: { ...base.credential, resume: true },
+            });
+          }
+        }
       }
 
       const rawText = textParts.join("\n");
@@ -1095,7 +1075,8 @@ function App() {
         combinedBotMessage.products ||
         combinedBotMessage.purchaseReservations ||
         combinedBotMessage.orders ||
-        combinedBotMessage.checkout;
+        combinedBotMessage.checkout ||
+        combinedBotMessage.authRequired;
       if (hasContent) {
         newMessages.push(combinedBotMessage);
       }
@@ -1191,6 +1172,24 @@ function App() {
               ))}
             </div>
           </main>
+          {pendingResume3DS ? (
+            <div className="mx-auto w-full max-w-7xl px-4 pb-2">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                <span>
+                  Completa l'autenticazione 3D Secure nella scheda aperta, poi
+                  conferma per finalizzare il pagamento.
+                </span>
+                <button
+                  type="button"
+                  onClick={handleResume3DS}
+                  disabled={isLoading}
+                  className="shrink-0 rounded-md bg-amber-600 px-3 py-1.5 font-medium text-white disabled:opacity-50"
+                >
+                  Ho completato il 3D Secure
+                </button>
+              </div>
+            </div>
+          ) : null}
           <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
         </section>
 

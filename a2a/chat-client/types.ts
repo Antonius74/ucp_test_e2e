@@ -35,9 +35,25 @@ export interface Product {
   };
 }
 
+export interface NexiOrderContext {
+  checkout_id: string;
+  amount_cents: number;
+  currency: string;
+  buyer_email: string;
+  description?: string;
+}
+
 export interface Credential {
   type: string;
+  // Sempre valorizzato (il Merchant richiede un token non vuoto). Per gli
+  // handler Nexi porta il riferimento reale: sessionId (carta) o checkout/order.
   token: string;
+  // Campi specifici dei gateway Nexi (Fase 7).
+  session_id?: string;
+  order_id?: string;
+  resume?: boolean;
+  order_context?: NexiOrderContext;
+  googlepay_payment_data?: unknown;
 }
 
 export interface PaymentMethod {
@@ -95,6 +111,10 @@ export interface ChatMessage {
   isUserAction?: boolean;
   checkout?: Checkout;
   paymentInstrument?: PaymentInstrument;
+  authRequired?: {
+    redirectUrl?: string | null;
+    message?: string;
+  };
 }
 
 export interface NexiCardPaymentRequest {
