@@ -68,14 +68,34 @@ interface NexiFinalizeResponse {
   error?: string;
 }
 
+interface NexiFieldSet {
+  fields?: NexiHostedField[];
+  sessionId?: string;
+}
+
+interface NexiValidationStatus {
+  id?: string;
+  valid?: boolean;
+}
+
 interface NexiBuildFlowEvent {
+  event?: string;
+  state?: string;
+  id?: string;
+  errorMessage?: string;
+  validationStatus?: NexiValidationStatus[];
   sessionId?: string;
   url?: string;
   operation?: NexiOperation;
-  fieldSet?: {
-    fields?: NexiHostedField[];
-  };
+  fieldSet?: NexiFieldSet;
   errorCode?: string;
+  // Some SDK builds nest the payload one level deeper under `data`.
+  data?: {
+    state?: string;
+    sessionId?: string;
+    operation?: NexiOperation;
+    fieldSet?: NexiFieldSet;
+  };
 }
 
 type NexiWorkflowState =
@@ -380,6 +400,7 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [cardFields, setCardFields] = useState<NexiHostedField[]>([]);
+  const [actionFields, setActionFields] = useState<NexiHostedField[]>([]);
   const [sessionId, setSessionId] = useState<string>("");
   const [email, setEmail] = useState(defaultEmail || "");
   const [saveCardForFuture, setSaveCardForFuture] = useState(false);
@@ -393,6 +414,7 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
   const cardFieldsReadyRef = useRef(false);
   const confirmTimeoutRef = useRef<number | null>(null);
   const finalizeInFlightRef = useRef(false);
+  const directFinalizeTriedRef = useRef(false);
   const isMountedRef = useRef(true);
 
   const totalAmount = checkout.totals.find((t) => t.type === "total")?.amount ?? 0;
@@ -541,6 +563,11 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
       }
 
       const actionId = preferredCardActionIdRef.current || "PAY_WITH_CARD";
+      // eslint-disable-next-line no-console
+      console.debug("[Nexi] clickAction attempt", {
+        actionId,
+        attempt: autoCardSelectionAttemptsRef.current + 1,
+      });
       try {
         build.clickAction(actionId);
       } catch {
@@ -579,6 +606,22 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
     };
   }, []);
 
+  // DIAGNOSTIC: log every postMessage the page receives so we can see exactly
+  // what (if anything) the Nexi iframe sends to the parent window, and its
+  // origin/shape. Remove once the card flow works.
+  useEffect(() => {
+    const rawMessageLogger = (evt: MessageEvent) => {
+      // eslint-disable-next-line no-console
+      console.debug("[Nexi][raw message]", {
+        origin: evt.origin,
+        dataType: typeof evt.data,
+        data: evt.data,
+      });
+    };
+    window.addEventListener("message", rawMessageLogger);
+    return () => window.removeEventListener("message", rawMessageLogger);
+  }, []);
+
   useEffect(() => {
     if (hasMountedRef.current) {
       return;
@@ -589,6 +632,7 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
       setIsLoading(true);
       setError(null);
       applyCardFieldsState([]);
+      setActionFields([]);
       autoCardSelectionTriggeredRef.current = false;
       autoCardSelectionAttemptsRef.current = 0;
       preferredCardActionIdRef.current = "PAY_WITH_CARD";
@@ -639,7 +683,10 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
 
         setSessionId(sessionPayload.sessionId);
         const cardActionFields = (sessionPayload.fields || []).filter(
-          (field) => field.class === "CARD" || field.id === "PAY_WITH_CARD"
+          (field) =>
+            (field.class === "CARD" || field.id === "PAY_WITH_CARD") &&
+            typeof field.src === "string" &&
+            field.src.trim().length > 0
         );
         const firstCardAction = cardActionFields.find(
           (field) => typeof field.id === "string" && field.id.trim().length > 0
@@ -647,6 +694,11 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
         if (firstCardAction?.id) {
           preferredCardActionIdRef.current = firstCardAction.id;
         }
+        // Step 1 of Build v3: the PAY_WITH_CARD action iframe must be mounted in
+        // the DOM so the SDK can register it (READY event). Without it,
+        // clickAction("PAY_WITH_CARD") has no target frame and the card-data
+        // collection step is never reached.
+        setActionFields(cardActionFields);
         const fallbackWarning = (sessionPayload.warnings || []).find(
           (warning) => warning.code === "UCP_FALLBACK_TEST_KEY"
         );
@@ -654,20 +706,44 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
           setStatusMessage(fallbackWarning.description);
         }
 
+        const extractFieldSetFields = (
+          evtData: NexiBuildFlowEvent
+        ): NexiHostedField[] =>
+          evtData?.fieldSet?.fields ||
+          evtData?.data?.fieldSet?.fields ||
+          [];
+
         const handleWorkflowStateChange = async (
           evtData: NexiBuildFlowEvent,
           stateRaw?: string
         ) => {
-          const state = normalizeWorkflowState(stateRaw);
+          // The workflow state can arrive as the SDK callback argument, at the
+          // top level of the event, or nested under `data` depending on the SDK
+          // build. Try all of them before giving up.
+          const state =
+            normalizeWorkflowState(stateRaw) ||
+            normalizeWorkflowState(evtData?.state) ||
+            normalizeWorkflowState(evtData?.data?.state);
+          // eslint-disable-next-line no-console
+          console.debug("[Nexi] workflow state change", {
+            stateRaw,
+            resolvedState: state,
+            evtData,
+          });
           if (!state) {
             return;
           }
 
-          const activeSessionId = evtData?.sessionId || sessionPayload.sessionId;
+          const activeSessionId =
+            evtData?.sessionId ||
+            evtData?.data?.sessionId ||
+            evtData?.fieldSet?.sessionId ||
+            evtData?.data?.fieldSet?.sessionId ||
+            sessionPayload.sessionId;
           if (state === "PAYMENT_METHOD_SELECTION") {
             setStatusMessage("Opening Nexi secure card fields...");
             applyCardFieldsState([]);
-            const stateFieldSet = evtData?.fieldSet?.fields || [];
+            const stateFieldSet = extractFieldSetFields(evtData);
             const preferredField = stateFieldSet.find(
               (field) =>
                 field &&
@@ -682,8 +758,12 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
           }
 
           if (state === "CARD_DATA_COLLECTION") {
-            const stateFields = evtData?.fieldSet?.fields || [];
+            const stateFields = extractFieldSetFields(evtData);
             applyCardFieldsState(stateFields);
+            // NOTE: the PAY_WITH_CARD frame is the session/3DS orchestrator and
+            // must stay alive in the DOM (removing it expires the session →
+            // HF0003). We only reorder the SDK frame map at confirm time so
+            // confirmData() targets a real card field instead of the action.
             if (hasSecureCardInputFields(stateFields)) {
               setStatusMessage("Insert card details in secure Nexi fields.");
             } else {
@@ -709,9 +789,10 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
             return;
           }
 
-          if (state === "PAYMENT_COMPLETE" && evtData?.operation) {
+          const operation = evtData?.operation || evtData?.data?.operation;
+          if (state === "PAYMENT_COMPLETE" && operation) {
             clearConfirmTimeout();
-            const instrument = mapNexiOperationToInstrument(evtData.operation);
+            const instrument = mapNexiOperationToInstrument(operation);
             await onSubmit(instrument);
             setIsSubmitting(false);
           }
@@ -720,23 +801,74 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
         buildRef.current = new BuildCtor({
           onBuildSuccess: (evtData, state) => {
             setError(null);
-            if (state) {
-              void handleWorkflowStateChange(evtData, state);
-            }
+            // Always forward to the handler: the workflow state may not be in the
+            // callback argument (the handler re-derives it from the event body).
+            void handleWorkflowStateChange(evtData, state);
           },
           onBuildError: (evtData) => {
+            // eslint-disable-next-line no-console
+            console.debug("[Nexi] onBuildError", evtData);
             clearConfirmTimeout();
             const code = evtData?.errorCode ? ` (${evtData.errorCode})` : "";
             setError(`Nexi validation error${code}.`);
             setIsSubmitting(false);
           },
           onConfirmError: (evtData) => {
+            // eslint-disable-next-line no-console
+            console.debug("[Nexi] onConfirmError", evtData);
             clearConfirmTimeout();
+            const status = Array.isArray(evtData?.validationStatus)
+              ? evtData.validationStatus
+              : [];
+            const invalid = status.filter((entry) => entry?.valid === false);
+            const onlyActionInvalid =
+              invalid.length > 0 &&
+              invalid.every(
+                (entry) =>
+                  (entry.id || "").toUpperCase() === "PAY_WITH_CARD" ||
+                  (entry.id || "").toUpperCase() ===
+                    (preferredCardActionIdRef.current || "").toUpperCase()
+              );
             const code = evtData?.errorCode ? ` (${evtData.errorCode})` : "";
+            // EXPERIMENT: every CARD_FIELD is valid and only the PAY_WITH_CARD
+            // action is flagged invalid. The card data may already be saved on
+            // the Nexi server, so try finalize_payment directly (it only needs
+            // the sessionId). One-shot guard to avoid loops.
+            if (
+              evtData?.errorCode === "HF0007" &&
+              onlyActionInvalid &&
+              !directFinalizeTriedRef.current
+            ) {
+              directFinalizeTriedRef.current = true;
+              const activeSessionId =
+                evtData?.sessionId || sessionPayload.sessionId;
+              // eslint-disable-next-line no-console
+              console.debug(
+                "[Nexi] HF0007 only on action; trying finalize_payment directly",
+                activeSessionId
+              );
+              setStatusMessage("Finalizing payment directly with Nexi...");
+              setIsSubmitting(true);
+              void finalizeSessionPayment(activeSessionId).catch(
+                (finalizeError) => {
+                  // eslint-disable-next-line no-console
+                  console.debug("[Nexi] direct finalize failed", finalizeError);
+                  setError(
+                    finalizeError instanceof Error
+                      ? `Direct finalize failed: ${finalizeError.message}`
+                      : `Nexi confirm error${code}.`
+                  );
+                  setIsSubmitting(false);
+                }
+              );
+              return;
+            }
             setError(`Nexi confirm error${code}.`);
             setIsSubmitting(false);
           },
           onAllFieldsLoaded: () => {
+            // eslint-disable-next-line no-console
+            console.debug("[Nexi] onAllFieldsLoaded");
             if (autoCardSelectionTriggeredRef.current) {
               return;
             }
@@ -747,14 +879,35 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
             }, AUTO_SELECT_CARD_DELAY_MS);
           },
           onComponentUnavailable: (evtData) => {
+            // eslint-disable-next-line no-console
+            console.debug("[Nexi] onComponentUnavailable", evtData);
+            // The PAY_WITH_CARD action is intentionally removed once we enter
+            // card-data collection, so ignore an unavailable event for it.
+            const unavailableId = (evtData?.id || "").toUpperCase();
+            if (
+              unavailableId === "PAY_WITH_CARD" ||
+              unavailableId === (preferredCardActionIdRef.current || "").toUpperCase()
+            ) {
+              return;
+            }
             const code = evtData?.errorCode ? ` (${evtData.errorCode})` : "";
             setError(
               `Nexi component temporarily unavailable${code}. Check third-party cookies and retry.`
             );
           },
           onBuildFlowStateChange: (evtData, state) => {
+            // eslint-disable-next-line no-console
+            console.debug("[Nexi] onBuildFlowStateChange (callback)", {
+              state,
+              evtData,
+            });
             void handleWorkflowStateChange(evtData, state);
           },
+        });
+        // eslint-disable-next-line no-console
+        console.debug("[Nexi] Build instance constructed", {
+          actionFields: cardActionFields,
+          sessionId: sessionPayload.sessionId,
         });
 
         setStatusMessage("Opening Nexi secure card fields...");
@@ -774,6 +927,7 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
 
   const handleConfirmPayment = () => {
     setError(null);
+    directFinalizeTriedRef.current = false;
     if (!isCardFieldsReady || !hasSecureCardInputFields(cardFields)) {
       setStatusMessage("Waiting for Nexi secure card fields...");
       setError(
@@ -846,6 +1000,38 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
           />
         </div>
 
+        {/* Step 1 of Build v3: the Nexi action button(s) (incl. PAY_WITH_CARD)
+            must be rendered VISIBLY so the Nexi iframe app boots, posts READY and
+            can be activated (a zero-size/hidden iframe never initializes, so
+            clickAction has no effect). Once the secure card fields are ready we
+            collapse the button but keep it mounted so the SDK keeps tracking the
+            frame. */}
+        {actionFields.length > 0 && (
+          <div
+            className="space-y-2"
+            style={
+              isCardFieldsReady
+                ? { height: 0, overflow: "hidden", margin: 0 }
+                : undefined
+            }
+            aria-hidden={isCardFieldsReady}
+          >
+            {!isCardFieldsReady && (
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Pay with card
+              </p>
+            )}
+            {actionFields.map((field, index) => (
+              <iframe
+                key={`nexi-action-${field.id || "card"}-${index}`}
+                src={field.src}
+                title={field.id || `Nexi action ${index + 1}`}
+                className="h-12 w-full rounded-md border border-slate-200"
+              />
+            ))}
+          </div>
+        )}
+
         {renderableCardFields.length > 0 && (
           <div className="space-y-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -902,4 +1088,4 @@ const NexiCardPaymentForm: React.FC<NexiCardPaymentFormProps> = ({
   );
 };
 
-export default NexiCardPaymentForm;
+export default NexiCardPaymentForm;

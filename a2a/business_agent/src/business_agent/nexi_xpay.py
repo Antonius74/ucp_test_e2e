@@ -43,6 +43,7 @@ class NexiConfig:
     environment: str
     api_key: str
     api_base: str
+    base_domain: str
     merchant_url: str
     result_url: str
     cancel_url: str
@@ -76,8 +77,27 @@ def _base_domain(environment: str) -> str:
     return "https://xpaysandbox.nexigroup.com"
 
 
+def _resolve_base_domain(environment: str) -> str:
+    """Base Nexi domain, overridable via NEXI_XPAY_BASE_DOMAIN.
+
+    Lets the card/build flow target an arbitrary environment (e.g. staging at
+    https://stg-ta.nexigroup.com) without code changes. Falls back to the
+    TEST/PROD defaults when the override is not set.
+    """
+    override = (os.getenv("NEXI_XPAY_BASE_DOMAIN") or "").strip().rstrip("/")
+    if override:
+        parsed = urlparse(override)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise NexiConfigurationError(
+                "NEXI_XPAY_BASE_DOMAIN must be a full http(s) origin, "
+                "e.g. https://stg-ta.nexigroup.com"
+            )
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return _base_domain(environment)
+
+
 def _api_base(environment: str) -> str:
-    return f"{_base_domain(environment)}/api/phoenix-0.0/psp/api/v1"
+    return f"{_resolve_base_domain(environment)}/api/phoenix-0.0/psp/api/v1"
 
 
 def _validate_merchant_url(url: str) -> str:
@@ -225,12 +245,15 @@ def load_nexi_config() -> NexiConfig:
         "IMPLICIT" if googlepay_capture_type_raw == "IMPLICIT" else "EXPLICIT"
     )
 
+    base_domain = _resolve_base_domain(environment)
+
     return NexiConfig(
         environment=environment,
         api_key=api_key,
         api_base=(
             os.getenv("NEXI_XPAY_API_BASE") or _api_base(environment)
         ).strip(),
+        base_domain=base_domain,
         merchant_url=merchant_url,
         result_url=result_url,
         cancel_url=cancel_url,
@@ -366,8 +389,8 @@ async def create_build_session(
         )
 
     data["environment"] = config.environment
-    data["nexiDomain"] = _base_domain(config.environment)
-    data["hfsdkUrl"] = f"{_base_domain(config.environment)}/monetaweb/resources/hfsdk.js"
+    data["nexiDomain"] = config.base_domain
+    data["hfsdkUrl"] = f"{config.base_domain}/monetaweb/resources/hfsdk.js"
     data["apiBaseUsed"] = config.api_base
     data["upstreamCid"] = response.headers.get("cid")
     return data
