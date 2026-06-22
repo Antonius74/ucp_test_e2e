@@ -68,6 +68,7 @@ type GooglePayWindow = Window & {
       api?: GooglePayApi;
     };
   };
+  PaymentRequest?: unknown;
 };
 
 const GOOGLE_PAY_SCRIPT_ID = "google-pay-web-js";
@@ -103,6 +104,48 @@ function buildPaymentHandlerConfig(config: {
     },
     environment: config.environment,
   };
+}
+
+function formatGooglePayError(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return String(error || "Unknown Google Pay error");
+  }
+
+  const errorRecord = error as Record<string, unknown>;
+  const statusCode =
+    typeof errorRecord.statusCode === "string" ? errorRecord.statusCode : "";
+  const statusMessage =
+    typeof errorRecord.statusMessage === "string"
+      ? errorRecord.statusMessage
+      : "";
+  const message =
+    error instanceof Error && error.message ? error.message : "";
+  const pieces = [statusCode, statusMessage || message].filter(Boolean);
+  return pieces.length > 0 ? pieces.join(": ") : JSON.stringify(errorRecord);
+}
+
+function hasNativePaymentRequestSupport(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return Boolean((window as GooglePayWindow).PaymentRequest);
+}
+
+function isGooglePayRuntimeUnavailable(error: unknown): boolean {
+  const formatted = formatGooglePayError(error);
+  return /PaymentRequest|IPC connection|browser process|not supported|unavailable/i.test(
+    formatted
+  );
+}
+
+function isGooglePayCancellation(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const errorRecord = error as Record<string, unknown>;
+  const statusCode =
+    typeof errorRecord.statusCode === "string" ? errorRecord.statusCode : "";
+  return statusCode === "CANCELED" && !isGooglePayRuntimeUnavailable(error);
 }
 
 function parseCsvList(value: string | undefined, fallback: string[]): string[] {
@@ -301,7 +344,6 @@ const GooglePayButton = ({
         countryCode: config.countryCode,
         checkoutOption: "COMPLETE_IMMEDIATE_PURCHASE",
       },
-      callbackIntents: ["PAYMENT_AUTHORIZATION"],
       emailRequired: true,
     }),
     [
@@ -328,6 +370,19 @@ const GooglePayButton = ({
     if (!activeClient || isProcessingRef.current || state !== "ready") {
       return;
     }
+
+    if (!hasNativePaymentRequestSupport()) {
+      onLifecycleEventRef.current?.({
+        phase: "error",
+        error: "Native PaymentRequest support is unavailable in this browser.",
+        paymentHandler: paymentHandlerConfig,
+      });
+      onErrorRef.current?.(
+        "Google Pay cannot open in this embedded browser because native PaymentRequest support is unavailable. Open the demo in Chrome, Edge, or Safari and try Google Pay again."
+      );
+      return;
+    }
+
     isProcessingRef.current = true;
     setIsProcessing(true);
 
@@ -379,23 +434,26 @@ const GooglePayButton = ({
       await onAuthorizedRef.current(tokenizedPaymentData);
     } catch (error) {
       console.error("Google Pay payment failed:", error);
-      const errorCode =
-        error &&
-        typeof error === "object" &&
-        "statusCode" in error &&
-        typeof (error as { statusCode?: unknown }).statusCode === "string"
-          ? (error as { statusCode: string }).statusCode
-          : "";
-      if (errorCode === "CANCELED") {
+      if (isGooglePayCancellation(error)) {
         onErrorRef.current?.("Google Pay payment cancelled.");
-      } else {
+      } else if (isGooglePayRuntimeUnavailable(error)) {
+        const formattedError = formatGooglePayError(error);
         onLifecycleEventRef.current?.({
           phase: "error",
-          error: error instanceof Error ? error.message : String(error),
+          error: formattedError,
           paymentHandler: paymentHandlerConfig,
         });
         onErrorRef.current?.(
-          "Google Pay payment failed. Please try again."
+          `Google Pay cannot open in this browser (${formattedError}). Open the demo in Chrome, Edge, or Safari and try Google Pay again.`
+        );
+      } else {
+        onLifecycleEventRef.current?.({
+          phase: "error",
+          error: formatGooglePayError(error),
+          paymentHandler: paymentHandlerConfig,
+        });
+        onErrorRef.current?.(
+          `Google Pay payment failed: ${formatGooglePayError(error)}. Please try again.`
         );
       }
     } finally {

@@ -95,7 +95,6 @@ export interface GooglePayPaymentRequest {
     countryCode: string;
     checkoutOption: string;
   };
-  callbackIntents?: string[];
   emailRequired?: boolean;
 }
 
