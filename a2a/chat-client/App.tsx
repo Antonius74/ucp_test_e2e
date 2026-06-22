@@ -23,6 +23,7 @@ import { CredentialProviderProxy } from "./mocks/credentialProviderProxy";
 
 import {
   type ChatMessage,
+  type GooglePayLifecycleEvent,
   type GooglePayTokenizedCard,
   type PaymentInstrument,
   type PurchaseReservation,
@@ -268,7 +269,8 @@ function deriveNameFromEmail(email: string): {
 }
 
 function createGooglePayInstrumentFromNexiResponse(
-  responsePayload: Record<string, unknown>
+  responsePayload: Record<string, unknown>,
+  googlePayPaymentData: GooglePayTokenizedCard
 ): PaymentInstrument {
   const operation =
     responsePayload.operation && typeof responsePayload.operation === "object"
@@ -298,11 +300,13 @@ function createGooglePayInstrumentFromNexiResponse(
     expiry_year: new Date().getFullYear() + 2,
     wallet_provider: "google_pay",
     display_label: `Google Pay •••• ${lastDigits}`,
-    handler_id: "example_payment_provider",
-    handler_name: "example.payment.provider",
+    handler_id: "com.google.pay",
+    handler_name: "Google Pay",
     credential: {
-      type: "nexi_googlepay_operation",
-      token: `nexi_googlepay_${operationId}`,
+      type: "token",
+      token:
+        googlePayPaymentData.paymentMethodData.tokenizationData.token ||
+        `nexi_googlepay_${operationId}`,
     },
   };
 }
@@ -685,6 +689,74 @@ function App() {
     }
   };
 
+  const handleGooglePayLifecycleEvent = (
+    checkout: Checkout,
+    event: GooglePayLifecycleEvent
+  ) => {
+    if (event.phase === "request") {
+      appendProtocolEvent({
+        direction: "outbound",
+        title: "Google Pay Web API loadPaymentData request",
+        endpoint: "https://pay.google.com/gp/p/js/pay.js#loadPaymentData",
+        httpMethod: "JS",
+        headers: {
+          "google-pay-environment":
+            String(event.paymentHandler.environment || "TEST"),
+          "ucp-payment-handler": String(event.paymentHandler.id || "com.google.pay"),
+          "ucp-checkout-id": checkout.id,
+        },
+        jsonrpcPayload: {
+          protocol: "Google Pay Web API",
+          ap2_ucp_handler: event.paymentHandler,
+          paymentDataRequest: event.request,
+        },
+        contextId,
+        taskId,
+      });
+      return;
+    }
+
+    if (event.phase === "authorized") {
+      appendProtocolEvent({
+        direction: "inbound",
+        title: "Google Pay tokenization response",
+        endpoint: "PaymentData.paymentMethodData.tokenizationData",
+        httpMethod: "JS",
+        headers: {
+          "ucp-payment-handler": String(event.paymentHandler.id || "com.google.pay"),
+          "ucp-checkout-id": checkout.id,
+        },
+        jsonrpcPayload: {
+          protocol: "Google Pay Web API",
+          paymentData: event.paymentData,
+        },
+        contextId,
+        taskId,
+        tokens: [
+          event.paymentData.paymentMethodData.tokenizationData.token,
+        ].filter(Boolean),
+      });
+      return;
+    }
+
+    appendProtocolEvent({
+      direction: "inbound",
+      title: "Google Pay Web API error",
+      endpoint: "https://pay.google.com/gp/p/js/pay.js",
+      httpMethod: "JS",
+      headers: {
+        "ucp-payment-handler": String(event.paymentHandler.id || "com.google.pay"),
+        "ucp-checkout-id": checkout.id,
+      },
+      jsonrpcPayload: {
+        protocol: "Google Pay Web API",
+        error: event.error,
+      },
+      contextId,
+      taskId,
+    });
+  };
+
   const handleGooglePayAuthorized = async (
     checkout: Checkout,
     payload: GooglePayTokenizedCard
@@ -714,23 +786,55 @@ function App() {
         email: payload.email || resolvedEmail,
       };
 
+      const nexiRequestBody = {
+        checkoutId: checkout.id,
+        amount: totalAmount,
+        currency: checkout.currency || "EUR",
+        buyerEmail: resolvedEmail,
+        description: `Checkout ${checkout.id}`,
+        googlePayPaymentData: googlePayPayload,
+      };
+      appendProtocolEvent({
+        direction: "outbound",
+        title: "Nexi Google Pay /orders/googlepay request",
+        endpoint: "/api/nexi/googlepay-order",
+        httpMethod: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": "configured server-side",
+          "gateway": "nexigtw",
+          "gatewayMerchantId": "999999990",
+        },
+        jsonrpcPayload: nexiRequestBody,
+        contextId,
+        taskId,
+        tokens: [
+          googlePayPayload.paymentMethodData.tokenizationData.token,
+        ].filter(Boolean),
+      });
+
       const response = await fetch("/api/nexi/googlepay-order", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          checkoutId: checkout.id,
-          amount: totalAmount,
-          currency: checkout.currency || "EUR",
-          buyerEmail: resolvedEmail,
-          description: `Checkout ${checkout.id}`,
-          googlePayPaymentData: googlePayPayload,
-        }),
+        body: JSON.stringify(nexiRequestBody),
       });
       const responsePayload = (await response.json()) as
         | Record<string, unknown>
         | { error?: string; details?: unknown };
+
+      appendProtocolEvent({
+        direction: "inbound",
+        title: "Nexi Google Pay /orders/googlepay response",
+        endpoint: "/api/nexi/googlepay-order",
+        httpMethod: "POST",
+        httpStatus: response.status,
+        headers: toHeadersObject(response.headers),
+        jsonrpcPayload: responsePayload,
+        contextId,
+        taskId,
+      });
 
       if (!response.ok) {
         const message =
@@ -777,7 +881,8 @@ function App() {
       }
 
       const paymentInstrument = createGooglePayInstrumentFromNexiResponse(
-        nexiPayload
+        nexiPayload,
+        googlePayPayload
       );
       await handleConfirmPayment(paymentInstrument);
     } catch (error) {
@@ -825,9 +930,16 @@ function App() {
             "a2a.ucp.checkout.payment_data": paymentInstrument,
             "a2a.ucp.checkout.risk_signals": {
               merchant_id: "merchant_ucp_demo",
-              gateway_hint: "mock.ucp.gateway",
+              gateway_hint:
+                paymentInstrument.handler_id === "com.google.pay"
+                  ? "nexi.googlepay.staging"
+                  : "mock.ucp.gateway",
               risk_score: 12,
               session_id: crypto.randomUUID(),
+              payment_protocol:
+                paymentInstrument.handler_id === "com.google.pay"
+                  ? "Google Pay Web API + AP2/UCP"
+                  : "UCP card token",
             },
           },
         },
@@ -1172,6 +1284,11 @@ function App() {
                       ? handleGooglePayAuthorized
                       : undefined
                   }
+                  onGooglePayLifecycleEvent={
+                    msg.checkout?.status === "ready_for_complete"
+                      ? handleGooglePayLifecycleEvent
+                      : undefined
+                  }
                   onGooglePayError={
                     msg.checkout?.status === "ready_for_complete"
                       ? handleGooglePayError
@@ -1181,11 +1298,6 @@ function App() {
                   onAddNewCard={handleAddNewCard}
                   onSelectPaymentMethod={handlePaymentMethodSelected}
                   onConfirmPayment={handleConfirmPayment}
-                  onCompletePayment={
-                    msg.checkout?.status === "ready_for_complete"
-                      ? handlePaymentMethodSelection
-                      : undefined
-                  }
                   isLastCheckout={index === lastCheckoutIndex}
                 ></ChatMessageComponent>
               ))}

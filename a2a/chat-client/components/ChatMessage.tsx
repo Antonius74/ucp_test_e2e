@@ -17,6 +17,7 @@ import { appConfig } from "@/config";
 import {
   type ChatMessage,
   type Checkout,
+  type GooglePayLifecycleEvent,
   type GooglePayTokenizedCard,
   type PaymentInstrument,
   type Product,
@@ -26,6 +27,7 @@ import {
 import CheckoutComponent from "./Checkout";
 import NexiCardPaymentForm from "./NexiCardPaymentForm";
 import PaymentConfirmationComponent from "./PaymentConfirmation";
+import PaymentChoiceCard from "./PaymentChoiceCard";
 import PaymentMethodSelector from "./PaymentMethodSelector";
 import OrderHistory from "./OrderHistory";
 import PurchaseReservations from "./PurchaseReservations";
@@ -45,12 +47,15 @@ interface ChatMessageProps {
   onCheckout?: () => void;
   onSelectPaymentMethod?: (selectedMethod: string) => void;
   onConfirmPayment?: (paymentInstrument: PaymentInstrument) => void;
-  onCompletePayment?: (checkout: Checkout) => void;
   onWalletPayment?: (checkout: Checkout, wallet: WalletType) => void;
   onGooglePayAuthorized?: (
     checkout: Checkout,
     payload: GooglePayTokenizedCard
   ) => Promise<void> | void;
+  onGooglePayLifecycleEvent?: (
+    checkout: Checkout,
+    event: GooglePayLifecycleEvent
+  ) => void;
   onGooglePayError?: (message: string) => void;
   isLastCheckout?: boolean;
 }
@@ -86,9 +91,9 @@ function ChatMessageComponent({
   onCheckout,
   onSelectPaymentMethod,
   onConfirmPayment,
-  onCompletePayment,
   onWalletPayment,
   onGooglePayAuthorized,
+  onGooglePayLifecycleEvent,
   onGooglePayError,
   isLastCheckout,
 }: ChatMessageProps) {
@@ -181,17 +186,23 @@ function ChatMessageComponent({
         )}
 
         {message.checkout && (
-          <CheckoutComponent
-            checkout={message.checkout}
-            onCheckout={isLastCheckout ? onCheckout : undefined}
-            onCompletePayment={isLastCheckout ? onCompletePayment : undefined}
-            onWalletPayment={isLastCheckout ? onWalletPayment : undefined}
-            onOpenCardPayment={isLastCheckout ? onOpenCardPayment : undefined}
-            onGooglePayAuthorized={
-              isLastCheckout ? onGooglePayAuthorized : undefined
-            }
-            onGooglePayError={isLastCheckout ? onGooglePayError : undefined}
-          />
+          <>
+            <CheckoutComponent
+              checkout={message.checkout}
+              onCheckout={isLastCheckout ? onCheckout : undefined}
+            />
+            {isLastCheckout &&
+              message.checkout.status === "ready_for_complete" && (
+                <PaymentChoiceCard
+                  checkout={message.checkout}
+                  onOpenCardPayment={onOpenCardPayment}
+                  onWalletPayment={onWalletPayment}
+                  onGooglePayAuthorized={onGooglePayAuthorized}
+                  onGooglePayLifecycleEvent={onGooglePayLifecycleEvent}
+                  onGooglePayError={onGooglePayError}
+                />
+              )}
+          </>
         )}
       </div>
     </div>

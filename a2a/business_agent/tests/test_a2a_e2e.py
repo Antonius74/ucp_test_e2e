@@ -37,6 +37,23 @@ MOCK_PAYMENT_INSTRUMENT = {
     "credential": {"type": "token", "token": "mock_token_e2e"},
 }
 
+MOCK_GOOGLE_PAY_INSTRUMENT = {
+    "id": "gpay_instr_e2e",
+    "type": "card",
+    "brand": "visa",
+    "last_digits": "1216",
+    "expiry_month": 12,
+    "expiry_year": 2028,
+    "wallet_provider": "google_pay",
+    "display_label": "Google Pay •••• 1216",
+    "handler_id": "com.google.pay",
+    "handler_name": "Google Pay",
+    "credential": {
+        "type": "token",
+        "token": "{\"signature\":\"mock\",\"protocolVersion\":\"ECv2\"}",
+    },
+}
+
 
 def _wait_for_url(url: str, timeout_s: int = 120) -> None:
     deadline = time.time() + timeout_s
@@ -322,6 +339,31 @@ class A2AOllamaE2ETest(unittest.TestCase):
         self.assertIn("capabilities", card)
         self.assertIn("ucp", ucp_profile)
         self.assertIn("capabilities", ucp_profile["ucp"])
+        handlers = ucp_profile.get("payment", {}).get("handlers", [])
+        handler_ids = {
+            handler.get("id")
+            for handler in handlers
+            if isinstance(handler, dict)
+        }
+        self.assertIn("com.google.pay", handler_ids)
+
+        google_pay_handler = next(
+            handler
+            for handler in handlers
+            if isinstance(handler, dict) and handler.get("id") == "com.google.pay"
+        )
+        tokenization = google_pay_handler.get("config", {}).get(
+            "tokenizationSpecification", {}
+        )
+        self.assertEqual(tokenization.get("type"), "PAYMENT_GATEWAY")
+        self.assertEqual(
+            tokenization.get("parameters", {}).get("gateway"),
+            "nexigtw",
+        )
+        self.assertEqual(
+            tokenization.get("parameters", {}).get("gatewayMerchantId"),
+            "999999990",
+        )
 
     def test_nexi_build_session_endpoint_returns_session(self) -> None:
         payload = {
@@ -527,6 +569,82 @@ class A2AOllamaE2ETest(unittest.TestCase):
         self.assertEqual(gateway.get("provider"), "mock.ucp.gateway")
         self.assertEqual(gateway.get("status"), "approved")
         self.assertIn("transaction_id", gateway)
+
+    def test_google_pay_ucp_instrument_completes_checkout(self) -> None:
+        add_result = self._send_message(
+            json.dumps(
+                {
+                    "action": "add_to_checkout",
+                    "product_id": "BISC-001",
+                    "quantity": 1,
+                }
+            )
+        )
+        context_id = add_result.get("contextId")
+        self.assertTrue(context_id)
+
+        details_result = self._send_message(
+            json.dumps(
+                {
+                    "action": "update_customer_details",
+                    "first_name": "Google",
+                    "last_name": "Pay",
+                    "street_address": "123 Main St",
+                    "address_locality": "San Francisco",
+                    "address_region": "CA",
+                    "postal_code": "94105",
+                    "address_country": "US",
+                    "email": "gpay-e2e@example.com",
+                }
+            ),
+            context_id=context_id,
+        )
+        details_parts = _extract_parts(details_result)
+        checkout = _find_data(details_parts, "a2a.ucp.checkout")
+        self.assertIsInstance(checkout, dict)
+        self.assertEqual(checkout.get("status"), "ready_for_complete")
+
+        completion_result = self._send_message(
+            [
+                {"type": "data", "data": {"action": "complete_checkout"}},
+                {
+                    "type": "data",
+                    "data": {
+                        "a2a.ucp.checkout.payment_data": MOCK_GOOGLE_PAY_INSTRUMENT,
+                        "a2a.ucp.checkout.risk_signals": {
+                            "payment_protocol": "Google Pay Web API + AP2/UCP",
+                            "gateway_hint": "nexi.googlepay.staging",
+                        },
+                    },
+                },
+            ],
+            context_id=context_id,
+        )
+        completion_parts = _extract_parts(completion_result)
+        completed_checkout = _find_data(completion_parts, "a2a.ucp.checkout")
+        self.assertIsInstance(completed_checkout, dict)
+        self.assertEqual(completed_checkout.get("status"), "completed")
+
+        protocol_trace = _find_data(completion_parts, "a2a.protocol_trace")
+        self.assertIsInstance(protocol_trace, list)
+        merchant_events = [
+            event
+            for event in protocol_trace
+            if isinstance(event, dict)
+            and event.get("stage")
+            == "a2a.fast_path.action.complete_checkout.merchant_result"
+        ]
+        self.assertGreaterEqual(len(merchant_events), 1)
+        merchant_result = (
+            merchant_events[-1]
+            .get("merchant_exchange", {})
+            .get("merchant_result", {})
+        )
+        self.assertEqual(merchant_result.get("handler_id"), "com.google.pay")
+        self.assertEqual(
+            merchant_result.get("ucp_integration", {}).get("payment_gateway"),
+            "nexi.googlepay.staging",
+        )
 
     def test_generic_catalog_query_returns_multiple_products(self) -> None:
         search_result = self._send_message("which kind of prod do you have")

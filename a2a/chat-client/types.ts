@@ -80,6 +80,42 @@ export interface GooglePayTokenizedCard {
   paymentMethodData: GooglePayPaymentMethodData;
 }
 
+export interface GooglePayPaymentRequest {
+  apiVersion: number;
+  apiVersionMinor: number;
+  allowedPaymentMethods: unknown[];
+  merchantInfo: {
+    merchantId?: string;
+    merchantName: string;
+  };
+  transactionInfo: {
+    totalPriceStatus: string;
+    totalPrice: string;
+    currencyCode: string;
+    countryCode: string;
+    checkoutOption: string;
+  };
+  callbackIntents?: string[];
+  emailRequired?: boolean;
+}
+
+export type GooglePayLifecycleEvent =
+  | {
+      phase: "request";
+      request: GooglePayPaymentRequest;
+      paymentHandler: Record<string, unknown>;
+    }
+  | {
+      phase: "authorized";
+      paymentData: GooglePayTokenizedCard;
+      paymentHandler: Record<string, unknown>;
+    }
+  | {
+      phase: "error";
+      error: string;
+      paymentHandler: Record<string, unknown>;
+    };
+
 export interface ChatMessage {
   id: string;
   sender: Sender;

@@ -40,6 +40,30 @@
         "instrument_schemas": [
           "https://ucp.dev/schemas/shopping/types/card_payment_instrument.json"
         ]
+      },
+      {
+        "id": "com.google.pay",
+        "name": "Google Pay",
+        "version": "2026-01-11",
+        "spec": "https://developers.google.com/pay/api/web/reference/request-objects",
+        "config_schema": "https://developers.google.com/pay/api/web/reference/request-objects#PaymentMethodTokenizationSpecification",
+        "instrument_schemas": [
+          "https://developers.google.com/pay/api/web/reference/response-objects#PaymentMethodTokenizationData"
+        ],
+        "config": {
+          "protocol": "AP2",
+          "tokenizationSpecification": {
+            "type": "PAYMENT_GATEWAY",
+            "parameters": {
+              "gateway": "nexigtw",
+              "gatewayMerchantId": "999999990"
+            }
+          },
+          "merchantInfo": {
+            "merchantId": "999999990",
+            "merchantName": "UCP Demo Merchant"
+          }
+        }
       }
     ]
   }

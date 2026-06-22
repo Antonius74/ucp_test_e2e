@@ -602,7 +602,8 @@ class MerchantAgentA2A:
                 "reason": "missing_handler_id",
             }
 
-        if handler_id != "example_payment_provider":
+        supported_handlers = {"example_payment_provider", "com.google.pay"}
+        if handler_id not in supported_handlers:
             return {
                 "status": "declined",
                 "message": "Unsupported payment handler for this merchant.",
@@ -640,7 +641,11 @@ class MerchantAgentA2A:
             "ucp_integration": {
                 "protocol": "UCP",
                 "merchant_agent": "mock.ucp.merchant.agent",
-                "payment_gateway": gateway_result["provider"],
+                "payment_gateway": (
+                    "nexi.googlepay.staging"
+                    if handler_id == "com.google.pay"
+                    else gateway_result["provider"]
+                ),
                 "gateway_transaction_id": gateway_result["transaction_id"],
             },
         }

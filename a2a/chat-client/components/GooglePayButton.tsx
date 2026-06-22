@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GooglePayTokenizedCard } from "../types";
+import type {
+  GooglePayLifecycleEvent,
+  GooglePayPaymentRequest,
+  GooglePayTokenizedCard,
+} from "../types";
 
 type GooglePayEnvironment = "TEST" | "PRODUCTION";
 
@@ -24,6 +28,7 @@ interface GooglePayButtonProps {
   totalPrice: string;
   currencyCode: string;
   onAuthorized: (payload: GooglePayTokenizedCard) => Promise<void> | void;
+  onLifecycleEvent?: (event: GooglePayLifecycleEvent) => void;
   onError?: (message: string) => void;
 }
 
@@ -67,11 +72,38 @@ type GooglePayWindow = Window & {
 
 const GOOGLE_PAY_SCRIPT_ID = "google-pay-web-js";
 const GOOGLE_PAY_SCRIPT_SOURCES = [
-  "/api/googlepay/pay.js",
   "https://pay.google.com/gp/p/js/pay.js",
+  "/api/googlepay/pay.js",
 ];
 const DEFAULT_ALLOWED_AUTH_METHODS = ["PAN_ONLY", "CRYPTOGRAM_3DS"];
 const DEFAULT_ALLOWED_CARD_NETWORKS = ["VISA", "MASTERCARD"];
+const GOOGLE_PAY_HANDLER_ID = "com.google.pay";
+
+function buildPaymentHandlerConfig(config: {
+  gateway: string;
+  gatewayMerchantId: string;
+  merchantId: string;
+  merchantName: string;
+  environment: GooglePayEnvironment;
+}): Record<string, unknown> {
+  return {
+    id: GOOGLE_PAY_HANDLER_ID,
+    protocol: "AP2",
+    ucp_handler: GOOGLE_PAY_HANDLER_ID,
+    tokenizationSpecification: {
+      type: "PAYMENT_GATEWAY",
+      parameters: {
+        gateway: config.gateway,
+        gatewayMerchantId: config.gatewayMerchantId,
+      },
+    },
+    merchantInfo: {
+      merchantId: config.merchantId,
+      merchantName: config.merchantName,
+    },
+    environment: config.environment,
+  };
+}
 
 function parseCsvList(value: string | undefined, fallback: string[]): string[] {
   const normalized = (value || "")
@@ -160,6 +192,7 @@ const GooglePayButton = ({
   totalPrice,
   currencyCode,
   onAuthorized,
+  onLifecycleEvent,
   onError,
 }: GooglePayButtonProps) => {
   const [state, setState] = useState<GooglePayButtonState>("loading");
@@ -167,6 +200,7 @@ const GooglePayButton = ({
   const paymentsClientRef = useRef<GooglePayPaymentsClient | null>(null);
   const onAuthorizedRef = useRef(onAuthorized);
   const onErrorRef = useRef(onError);
+  const onLifecycleEventRef = useRef(onLifecycleEvent);
 
   useEffect(() => {
     onAuthorizedRef.current = onAuthorized;
@@ -175,6 +209,10 @@ const GooglePayButton = ({
   useEffect(() => {
     onErrorRef.current = onError;
   }, [onError]);
+
+  useEffect(() => {
+    onLifecycleEventRef.current = onLifecycleEvent;
+  }, [onLifecycleEvent]);
 
   const config = useMemo(() => {
     const envMap = (import.meta as unknown as { env?: Record<string, string> })
@@ -212,7 +250,25 @@ const GooglePayButton = ({
     [config.allowedAuthMethods, config.allowedCardNetworks]
   );
 
-  const paymentDataRequest = useMemo(
+  const paymentHandlerConfig = useMemo(
+    () =>
+      buildPaymentHandlerConfig({
+        gateway: config.gateway,
+        gatewayMerchantId: config.gatewayMerchantId,
+        merchantId: config.merchantId,
+        merchantName: config.merchantName,
+        environment: config.environment,
+      }),
+    [
+      config.gateway,
+      config.gatewayMerchantId,
+      config.merchantId,
+      config.merchantName,
+      config.environment,
+    ]
+  );
+
+  const paymentDataRequest = useMemo<GooglePayPaymentRequest>(
     () => ({
       apiVersion: 2,
       apiVersionMinor: 0,
@@ -245,6 +301,7 @@ const GooglePayButton = ({
         countryCode: config.countryCode,
         checkoutOption: "COMPLETE_IMMEDIATE_PURCHASE",
       },
+      callbackIntents: ["PAYMENT_AUTHORIZATION"],
       emailRequired: true,
     }),
     [
@@ -275,6 +332,12 @@ const GooglePayButton = ({
     setIsProcessing(true);
 
     try {
+      onLifecycleEventRef.current?.({
+        phase: "request",
+        request: paymentDataRequestRef.current,
+        paymentHandler: paymentHandlerConfig,
+      });
+
       const paymentData = await activeClient.loadPaymentData(
         paymentDataRequestRef.current
       );
@@ -285,7 +348,7 @@ const GooglePayButton = ({
         throw new Error("Google Pay token is missing.");
       }
 
-      await onAuthorizedRef.current({
+      const tokenizedPaymentData: GooglePayTokenizedCard = {
         apiVersion: paymentData.apiVersion ?? 2,
         apiVersionMinor: paymentData.apiVersionMinor ?? 0,
         email: paymentData.email,
@@ -305,7 +368,15 @@ const GooglePayButton = ({
           },
           type: paymentMethodType,
         },
+      };
+
+      onLifecycleEventRef.current?.({
+        phase: "authorized",
+        paymentData: tokenizedPaymentData,
+        paymentHandler: paymentHandlerConfig,
       });
+
+      await onAuthorizedRef.current(tokenizedPaymentData);
     } catch (error) {
       console.error("Google Pay payment failed:", error);
       const errorCode =
@@ -318,6 +389,11 @@ const GooglePayButton = ({
       if (errorCode === "CANCELED") {
         onErrorRef.current?.("Google Pay payment cancelled.");
       } else {
+        onLifecycleEventRef.current?.({
+          phase: "error",
+          error: error instanceof Error ? error.message : String(error),
+          paymentHandler: paymentHandlerConfig,
+        });
         onErrorRef.current?.(
           "Google Pay payment failed. Please try again."
         );
@@ -395,7 +471,7 @@ const GooglePayButton = ({
       <button
         type="button"
         disabled
-        className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-slate-100 px-4 text-sm font-semibold text-slate-500"
+        className="h-11 w-full rounded-md border border-slate-300 bg-slate-100 px-4 text-sm font-semibold text-slate-500"
       >
         Google Pay unavailable
       </button>
@@ -416,7 +492,7 @@ const GooglePayButton = ({
         void requestGooglePayPayment();
       }}
       disabled={state !== "ready" || isProcessing}
-      className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+      className="h-11 w-full rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
     >
       {buttonText}
     </button>

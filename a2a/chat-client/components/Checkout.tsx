@@ -15,36 +15,20 @@
  */
 import type React from "react";
 import { useState } from "react";
-import GooglePayButton from "./GooglePayButton";
 
 import type {
   Checkout,
   CheckoutItem,
-  GooglePayTokenizedCard,
-  WalletType,
 } from "../types";
 
 interface CheckoutProps {
   checkout: Checkout;
   onCheckout?: () => void;
-  onCompletePayment?: (checkout: Checkout) => void;
-  onOpenCardPayment?: (checkout: Checkout) => void;
-  onWalletPayment?: (checkout: Checkout, wallet: WalletType) => void;
-  onGooglePayAuthorized?: (
-    checkout: Checkout,
-    payload: GooglePayTokenizedCard
-  ) => Promise<void> | void;
-  onGooglePayError?: (message: string) => void;
 }
 
 const CheckoutComponent: React.FC<CheckoutProps> = ({
   checkout,
   onCheckout,
-  onCompletePayment,
-  onOpenCardPayment,
-  onWalletPayment,
-  onGooglePayAuthorized,
-  onGooglePayError,
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const itemsToShow = isExpanded
@@ -189,48 +173,6 @@ const CheckoutComponent: React.FC<CheckoutProps> = ({
               >
                 Start Payment
               </button>
-            )}
-            {isReadyForPayment && (
-              <>
-                {onOpenCardPayment && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenCardPayment?.(checkout)}
-                    className="h-10 min-w-[150px] rounded-md bg-blue-700 px-4 text-sm font-semibold text-white transition hover:bg-blue-800"
-                  >
-                    Paga con Carta
-                  </button>
-                )}
-                {onWalletPayment && (
-                  <button
-                    type="button"
-                    onClick={() => onWalletPayment(checkout, "apple_pay")}
-                    className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
-                  >
-                    Paga con Apple
-                  </button>
-                )}
-                {onGooglePayAuthorized ? (
-                  <GooglePayButton
-                    totalPrice={(
-                      (grandTotal?.amount || 0) / 100
-                    ).toFixed(2)}
-                    currencyCode={checkout.currency || "EUR"}
-                    onAuthorized={(payload) =>
-                      onGooglePayAuthorized(checkout, payload)
-                    }
-                    onError={onGooglePayError}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    disabled
-                    className="h-10 min-w-[150px] rounded-md border border-slate-300 bg-slate-100 px-4 text-sm font-semibold text-slate-500"
-                  >
-                    Google Pay unavailable
-                  </button>
-                )}
-              </>
             )}
           </div>
         )}
