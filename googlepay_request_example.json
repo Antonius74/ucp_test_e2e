@@ -1,0 +1,60 @@
+{
+  "method": "POST",
+  "url": "https://stg-ta.nexigroup.com/api/phoenix-0.0/psp/api/v1/orders/googlepay",
+  "headers": {
+    "x-api-key": "447d71f4-9e13-4403-aca8-f1880e56c221",
+    "correlation-id": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b",
+    "content-type": "application/json",
+    "accept": "*/*",
+    "accept-language": "en,it;q=0.9",
+    "cache-control": "no-cache"
+  },
+  "body": {
+    "order": {
+      "orderId": "ucpdemo123",
+      "amount": "1000",
+      "currency": "EUR",
+      "customerId": "0000999",
+      "description": "UCP Demo purchase",
+      "customField": "terminal:0000999",
+      "customerInfo": {
+        "cardHolderName": "Mario Rossi",
+        "cardHolderEmail": "mario.rossi@example.com"
+      }
+    },
+    "paymentSession": {
+      "actionType": "PAY",
+      "amount": "1000",
+      "recurrence": {
+        "action": "NO_RECURRING",
+        "contractId": null,
+        "contractType": null,
+        "contractExpiryDate": null,
+        "contractFrequency": null
+      },
+      "captureType": "IMPLICIT",
+      "exemptions": "NO_PREFERENCE",
+      "language": "ita",
+      "resultUrl": "https://example.com/ucp-order/{orderId}",
+      "cancelUrl": "https://example.com/ucp-cancel"
+    },
+    "googlePayPaymentData": {
+      "apiVersion": 2,
+      "apiVersionMinor": 0,
+      "email": "mario.rossi@example.com",
+      "paymentMethodData": {
+        "description": "Visa •••• 1234",
+        "info": {
+          "cardNetwork": "VISA",
+          "cardDetails": "1234",
+          "cardFundingSource": "CREDIT"
+        },
+        "tokenizationData": {
+          "token": "PAYMENT_GATEWAY_TOKEN_PLACEHOLDER",
+          "type": "PAYMENT_GATEWAY"
+        },
+        "type": "CARD"
+      }
+    }
+  }
+}
